@@ -1,10 +1,13 @@
 import * as stylex from '@stylexjs/stylex'
 import { useEffect, useRef, useState } from 'react'
 import type { Capabilities } from '../../core/ai/capabilities'
-import { usable } from '../../core/ai/capabilities'
 import { db } from '../../core/db/client'
 import type { ExportedConversation } from '../../core/db/repo'
-import { availableTools } from '../../core/tools/registry'
+import { allTools } from '../../core/tools/registry'
+import { Gated } from './Gated'
+import { CapabilitiesView } from './CapabilitiesView'
+import { McpSettings } from './McpSettings'
+import { SkillsSettings } from './SkillsSettings'
 import { usePlatform } from '../../platform/platform'
 import { DEFAULT_SETTINGS, type Settings, type Theme } from '../state'
 import { color, font, motion, radius, size, space } from '../tokens.stylex'
@@ -18,7 +21,17 @@ interface Props {
   caps: Capabilities
   storage?: { persistent: boolean; reason: string }
   onCleared: () => void
+  /** tab to show when the panel opens */
+  initialTab?: SettingsTab
 }
+
+export type SettingsTab = 'general' | 'skills' | 'tools' | 'capabilities'
+const TABS: [SettingsTab, string][] = [
+  ['general', 'General'],
+  ['skills', 'Skills'],
+  ['tools', 'Tools'],
+  ['capabilities', 'What works here'],
+]
 
 function download(name: string, type: string, body: string) {
   const url = URL.createObjectURL(new Blob([body], { type }))
@@ -48,7 +61,11 @@ function toMarkdown(data: ExportedConversation[]) {
 
 const stamp = () => new Date().toISOString().slice(0, 10)
 
-export function SettingsPanel({ open, onClose, settings, update, caps, storage, onCleared }: Props) {
+export function SettingsPanel({ open, onClose, settings, update, caps, storage, onCleared, initialTab = 'general' }: Props) {
+  const [tab, setTab] = useState<SettingsTab>(initialTab)
+  useEffect(() => {
+    if (open) setTab(initialTab)
+  }, [open, initialTab])
   const ref = useRef<HTMLDialogElement>(null)
   const platform = usePlatform()
   const [prompt, setPrompt] = useState(settings.systemPrompt)
@@ -68,7 +85,7 @@ export function SettingsPanel({ open, onClose, settings, update, caps, storage, 
     }
   }, [open, caps.sampling])
 
-  const tools = availableTools({ caps, platform, db })
+  const tools = allTools({ caps, platform, db })
   const customSampling = settings.temperature != null && settings.topK != null
 
   const importFile = async (file: File) => {
@@ -82,16 +99,6 @@ export function SettingsPanel({ open, onClose, settings, update, caps, storage, 
     }
   }
 
-  const capabilityRows: [string, boolean][] = [
-    ['Prompt API (chat)', usable(caps.prompt)],
-    ['Image input', caps.image],
-    ['Audio input', caps.audio],
-    ['Summarizer', usable(caps.summarizer)],
-    ['Translator', caps.translator],
-    ['Language detector', usable(caps.languageDetector)],
-    ['Rewriter', usable(caps.rewriter)],
-    ['Proofreader', usable(caps.proofreader)],
-  ]
 
   return (
     <dialog ref={ref} onClose={onClose} onClick={(e) => e.target === ref.current && onClose()} {...stylex.props(styles.dialog)}>
@@ -100,6 +107,38 @@ export function SettingsPanel({ open, onClose, settings, update, caps, storage, 
           <h2 {...stylex.props(styles.h2)}>Settings</h2>
           <Button icon="x" label="Close settings" onClick={onClose} />
         </header>
+        <div role="tablist" aria-label="Settings sections" {...stylex.props(styles.tabs)}>
+          {TABS.map(([id, label]) => (
+            <button
+              key={id}
+              role="tab"
+              type="button"
+              aria-selected={tab === id}
+              onClick={() => setTab(id)}
+              {...stylex.props(styles.tab, tab === id && styles.tabActive)}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {tab === 'skills' && (
+          <section {...stylex.props(styles.section)}>
+            <SkillsSettings />
+          </section>
+        )}
+        {tab === 'tools' && (
+          <section {...stylex.props(styles.section)}>
+            <McpSettings />
+          </section>
+        )}
+        {tab === 'capabilities' && (
+          <section {...stylex.props(styles.section)}>
+            <CapabilitiesView />
+          </section>
+        )}
+        {tab === 'general' && (
+          <>
 
         <section {...stylex.props(styles.section)}>
           <label htmlFor="system-prompt" {...stylex.props(styles.h3)}>
@@ -118,13 +157,13 @@ export function SettingsPanel({ open, onClose, settings, update, caps, storage, 
           </Button>
         </section>
 
-        {caps.sampling && (
-          <section {...stylex.props(styles.section)}>
+        <section {...stylex.props(styles.section)}>
             <h3 {...stylex.props(styles.h3)}>Sampling</h3>
             <label {...stylex.props(styles.row)}>
+              <Gated feature="sampling">
               <input
                 type="checkbox"
-                checked={customSampling}
+                checked={customSampling && caps.sampling}
                 onChange={async (e) => {
                   if (e.target.checked) {
                     await update('temperature', params?.defaultTemperature ?? 1)
@@ -135,9 +174,10 @@ export function SettingsPanel({ open, onClose, settings, update, caps, storage, 
                   }
                 }}
               />
+              </Gated>
               Use custom temperature and top-K
             </label>
-            {customSampling && (
+            {customSampling && caps.sampling && (
               <>
                 <label {...stylex.props(styles.slider)}>
                   <span>Temperature {settings.temperature!.toFixed(1)}</span>
@@ -163,18 +203,7 @@ export function SettingsPanel({ open, onClose, settings, update, caps, storage, 
                 </label>
               </>
             )}
-          </section>
-        )}
-
-        {caps.deterministicOnly && (
-          <section {...stylex.props(styles.section)}>
-            <h3 {...stylex.props(styles.h3)}>Sampling</h3>
-            <p {...stylex.props(styles.hint)}>
-              Chrome runs this model with speculative decoding, which only allows its most predictable sampling mode, so
-              temperature and top-K can’t be changed.
-            </p>
-          </section>
-        )}
+        </section>
 
         <section {...stylex.props(styles.section)}>
           <h3 {...stylex.props(styles.h3)}>Agent tools</h3>
@@ -189,10 +218,11 @@ export function SettingsPanel({ open, onClose, settings, update, caps, storage, 
             {tools.map((t) => (
               <li key={t.name}>
                 <label {...stylex.props(styles.row, !settings.toolsEnabled && styles.disabled)}>
+                  <Gated feature="agent-tools" unless={{ when: !!t.unavailable, reason: t.unavailable ?? '' }}>
                   <input
                     type="checkbox"
                     disabled={!settings.toolsEnabled}
-                    checked={!settings.disabledTools.includes(t.name)}
+                    checked={!t.unavailable && !settings.disabledTools.includes(t.name)}
                     onChange={(e) =>
                       update(
                         'disabledTools',
@@ -202,6 +232,7 @@ export function SettingsPanel({ open, onClose, settings, update, caps, storage, 
                       )
                     }
                   />
+                  </Gated>
                   <span>
                     {t.label} <span {...stylex.props(styles.hint)}>{t.description}</span>
                   </span>
@@ -273,18 +304,8 @@ export function SettingsPanel({ open, onClose, settings, update, caps, storage, 
           {note && <p role="status" {...stylex.props(styles.hint)}>{note}</p>}
         </section>
 
-        <section {...stylex.props(styles.section)}>
-          <h3 {...stylex.props(styles.h3)}>Chrome AI on this device</h3>
-          <ul {...stylex.props(styles.caps)}>
-            {capabilityRows.map(([name, ok]) => (
-              <li key={name} {...stylex.props(styles.capRow)}>
-                <span {...stylex.props(styles.capDot, ok ? styles.capOn : styles.capOff)} aria-hidden />
-                <span>{name}</span>
-                <span {...stylex.props(styles.hint)}>{ok ? 'available' : 'not available'}</span>
-              </li>
-            ))}
-          </ul>
-        </section>
+          </>
+        )}
       </div>
     </dialog>
   )
@@ -326,6 +347,30 @@ const styles = stylex.create({
     borderBottomColor: color.line,
   },
   h2: { margin: 0, fontSize: font.lg, fontWeight: 600 },
+  tabs: {
+    display: 'flex',
+    gap: space.xxs,
+    paddingInline: space.lg,
+    paddingTop: space.md,
+    borderBottomWidth: 1,
+    borderBottomStyle: 'solid',
+    borderBottomColor: color.line,
+    overflowX: 'auto',
+  },
+  tab: {
+    paddingInline: space.md,
+    paddingBlock: space.sm,
+    borderWidth: 0,
+    borderBottomWidth: 2,
+    borderBottomStyle: 'solid',
+    borderBottomColor: 'transparent',
+    backgroundColor: 'transparent',
+    color: color.muted,
+    fontWeight: 500,
+    whiteSpace: 'nowrap',
+    cursor: 'pointer',
+  },
+  tabActive: { color: color.ink, borderBottomColor: color.accent },
   h3: { display: 'block', margin: 0, fontSize: font.sm, fontWeight: 600 },
   section: {
     display: 'flex',

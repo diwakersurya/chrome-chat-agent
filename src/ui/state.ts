@@ -11,6 +11,10 @@ export interface Settings {
   toolsEnabled: boolean
   disabledTools: string[]
   theme: Theme
+  /** "source/tool" keys the user chose to always allow */
+  mcpAlwaysAllow: string[]
+  /** the "What works here" overview was shown once */
+  seenCapabilities: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -21,6 +25,8 @@ export const DEFAULT_SETTINGS: Settings = {
   toolsEnabled: true,
   disabledTools: [],
   theme: 'system',
+  mcpAlwaysAllow: [],
+  seenCapabilities: false,
 }
 
 export function useSettings() {

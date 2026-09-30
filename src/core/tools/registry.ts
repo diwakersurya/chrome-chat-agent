@@ -16,6 +16,8 @@ export interface ToolMeta {
   name: string
   label: string
   description: string
+  /** why this tool can't run here (it is still listed, disabled) */
+  unavailable?: string
 }
 
 interface Env {
@@ -147,9 +149,15 @@ const ENTRIES: Entry[] = [
   },
 ]
 
-/** Tools supported in this environment (for the settings UI). */
-export function availableTools(env: Env): ToolMeta[] {
-  return ENTRIES.filter((t) => t.enabled(env)).map((t) => t.meta)
+const UNAVAILABLE: Record<string, string> = {
+  read_tab: 'Available in the Chrome extension, which can read the tab you’re viewing. Web pages can’t.',
+}
+
+/** Every tool, with a reason for those that can't run here (for the settings UI). */
+export function allTools(env: Env): ToolMeta[] {
+  return ENTRIES.map((t) =>
+    t.enabled(env) ? t.meta : { ...t.meta, unavailable: UNAVAILABLE[t.meta.name] ?? 'Needs the on-device model.' },
+  )
 }
 
 /** Tool implementations for chat(), minus those the user switched off. */

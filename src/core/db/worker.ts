@@ -42,6 +42,11 @@ const WRITES = new Set([
   'setSetting',
   'importAll',
   'clearAll',
+  'saveSkill',
+  'updateSkill',
+  'deleteSkill',
+  'saveMcpServer',
+  'deleteMcpServer',
 ])
 
 self.onmessage = async (e: MessageEvent<{ id: number; fn: string; args: unknown[] }>) => {

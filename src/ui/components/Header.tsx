@@ -13,6 +13,7 @@ interface Props {
   showMenu: boolean
   onMenu: () => void
   onSettings: () => void
+  onCapabilities: () => void
 }
 
 const STATUS: Record<Availability, string> = {
@@ -22,7 +23,7 @@ const STATUS: Record<Availability, string> = {
   unavailable: 'Chrome’s built-in model is not available on this device.',
 }
 
-export function Header({ title, model, progress, stats, showMenu, onMenu, onSettings }: Props) {
+export function Header({ title, model, progress, stats, showMenu, onMenu, onSettings, onCapabilities }: Props) {
   const budget = stats && contextBudget(stats)
   const statusText =
     model === 'downloading' && progress != null ? `${STATUS.downloading} ${Math.round(progress * 100)}%` : STATUS[model]
@@ -59,6 +60,7 @@ export function Header({ title, model, progress, stats, showMenu, onMenu, onSett
         <span {...stylex.props(styles.dot, styles[model], model === 'downloading' && styles.ring(progress ?? 0))} />
         <span {...stylex.props(styles.chipLabel)}>On-device</span>
       </span>
+      <Button icon="info" label="What works here" onClick={onCapabilities} />
       <Button icon="settings" label="Settings" onClick={onSettings} />
     </header>
   )

@@ -20,6 +20,9 @@ It ships two ways from one React codebase:
 - Long chats are summarized automatically when they approach the model's context window
 - System prompt, sampling (temperature/top-K in the extension), per-tool toggles, and light/dark/system theme
 - Export as JSON or Markdown, import JSON, and delete everything
+- **Skills:** import `SKILL.md` files (Agent Skills format, the same one Claude and Codex use), one at a time or a whole folder. Use one by typing `/` in the message box. The app suggests a matching skill as you type.
+- **MCP tools:** remote servers (Streamable HTTP or SSE), local stdio servers through a bridge, and WebMCP tools of the current tab (extension only). Add them to a chat by typing `@`. Tools not marked read-only ask before they run.
+- **What works here:** every feature and its limits are listed upfront (Settings → What works here, shown on first run). Anything the current build or device can't do stays visible but disabled, and hovering it shows why.
 
 ## Install
 
@@ -51,13 +54,28 @@ It ships two ways from one React codebase:
 - `responseConstraint` (JSON-schema output) is rejected, so tool routing uses a plain JSON prompt and a lenient parser.
 - Summarizer, Writer and Rewriter fail with "Failed to count tokens". A failing Summarizer also resets the model service and kills open chat sessions. So these tasks run on the Prompt API instead, and a chat session that dies is rebuilt from history and retried once.
 
+## Skills and MCP
+
+| | Web | Extension | Limits |
+|---|---|---|---|
+| Skills | ✅ | ✅ | Instructions only; bundled scripts don't run. Each skill you use takes model memory. |
+| Remote MCP | ✅ | ✅ | Web: the server must allow browser requests (CORS). Static auth headers only, no OAuth yet. |
+| Local MCP | ✅ | ✅ | Browsers can't start programs. Run the bridge command the app shows you: `npx -y supergateway --stdio "<your server command>" --port 8931 --cors` |
+| WebMCP (page tools) | — | ✅ | Only on sites that expose WebMCP tools. |
+
+- **Tool limit:** up to 12 external tools per chat. The small on-device model picks tools less reliably from long lists, and every tool description uses model memory; the chat shows how much.
+- **Where your data lives:** auth headers stay in this browser's local database and are never exported.
+- **Untrusted results:** tool results are treated as untrusted content.
+
+To try MCP locally, run the dev test server with `bun run mcp:test`, then add `http://localhost:8940/mcp` in Settings → Tools.
+
 ## Develop
 
 ```sh
 bun install
 bun run dev:web      # web app with HMR
 bun run dev:ext      # extension with HMR: load dist/ext as unpacked
-bun run test         # vitest: adapter, tool loop, compaction, SQLite repo, calculator
+bun run test         # vitest: adapter, tool loop, compaction, SQLite repo, skills, MCP, feature gating
 bun run build        # dist/web and dist/ext
 ```
 

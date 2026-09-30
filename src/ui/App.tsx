@@ -1,15 +1,18 @@
 import * as stylex from '@stylexjs/stylex'
 import type { UIMessage } from '@tanstack/ai-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { baseModelOptions } from '../core/ai/capabilities'
 import type { ContextStats } from '../core/ai/sessionCache'
 import { db, useDbQuery } from '../core/db/client'
 import type { ConversationRow } from '../core/db/repo'
 import { PlatformContext, type PageContext, type Platform } from '../platform/platform'
 import { adapter, ChatView, NEW_TITLE } from './components/ChatView'
+import { FeatureEnvContext } from './components/Gated'
 import { Header } from './components/Header'
+import type { FeatureEnv } from '../core/features'
 import { ModelGate } from './components/ModelGate'
-import { SettingsPanel } from './components/SettingsPanel'
+import { SettingsPanel, type SettingsTab } from './components/SettingsPanel'
+import { configureApprovals } from '../core/mcp/approval'
 import { Sidebar } from './components/Sidebar'
 import { Toast, type ToastData } from './components/Toast'
 import { useCapabilities, useDbStatus, useSettings } from './state'
@@ -37,11 +40,28 @@ function useNarrow(query = '(max-width: 760px)') {
 
 export function App({ platform }: { platform: Platform }) {
   const { caps, refresh } = useCapabilities()
-  const { settings, update } = useSettings()
+  const { settings, update, loaded } = useSettings()
   const storage = useDbStatus()
   const narrow = useNarrow()
   const [drawer, setDrawer] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('general')
+  const openSettings = useCallback((tab: SettingsTab = 'general') => {
+    setSettingsTab(tab)
+    setSettingsOpen(true)
+  }, [])
+
+  // limitations upfront: show "What works here" once on first run
+  useEffect(() => {
+    if (!loaded || settings.seenCapabilities) return
+    void update('seenCapabilities', true)
+    openSettings('capabilities')
+  }, [loaded, settings.seenCapabilities, update, openSettings])
+
+  // external tool approvals: restore "always allow" choices and persist new ones
+  useEffect(() => {
+    configureApprovals(settings.mcpAlwaysAllow, (keys) => void update('mcpAlwaysAllow', keys))
+  }, [settings.mcpAlwaysAllow, update])
   const [active, setActive] = useState<Active>(fresh)
   const [stats, setStats] = useState<ContextStats>()
   const [toast, setToast] = useState<ToastData>()
@@ -135,12 +155,14 @@ export function App({ platform }: { platform: Platform }) {
     return () => removeEventListener('keydown', onKey)
   }, [newChat])
 
+  const featureEnv = useMemo<FeatureEnv>(() => ({ target: platform.target, caps }), [platform.target, caps])
   const theme = settings.theme === 'dark' ? darkTheme : settings.theme === 'light' ? lightTheme : null
   const model = progress != null ? 'downloading' : (caps?.prompt ?? 'unavailable')
   const showSidebar = !narrow || drawer
 
   return (
     <PlatformContext.Provider value={platform}>
+      <FeatureEnvContext.Provider value={featureEnv}>
       <div {...stylex.props(theme, styles.root)}>
         {narrow && drawer && <div {...stylex.props(styles.scrim)} onClick={() => setDrawer(false)} aria-hidden />}
         <div {...stylex.props(styles.side, narrow && styles.sideOverlay, narrow && !showSidebar && styles.sideHidden)} inert={!showSidebar}>
@@ -154,7 +176,8 @@ export function App({ platform }: { platform: Platform }) {
             stats={stats}
             showMenu={narrow}
             onMenu={() => setDrawer(true)}
-            onSettings={() => setSettingsOpen(true)}
+            onSettings={() => openSettings()}
+            onCapabilities={() => openSettings('capabilities')}
           />
           {caps &&
             (model === 'available' ? (
@@ -177,6 +200,7 @@ export function App({ platform }: { platform: Platform }) {
         {caps && (
           <SettingsPanel
             open={settingsOpen}
+            initialTab={settingsTab}
             onClose={() => setSettingsOpen(false)}
             settings={settings}
             update={update}
@@ -190,6 +214,7 @@ export function App({ platform }: { platform: Platform }) {
         )}
         {toast && <Toast toast={toast} onDone={() => setToast(undefined)} />}
       </div>
+      </FeatureEnvContext.Provider>
     </PlatformContext.Provider>
   )
 }

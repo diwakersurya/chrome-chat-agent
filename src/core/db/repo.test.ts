@@ -20,7 +20,7 @@ const msg = (id: string, text: string, role: 'user' | 'assistant' = 'user'): rep
 describe('repo', () => {
   it('migrates idempotently', () => {
     repo.migrate(db)
-    expect(db.selectObjects('PRAGMA user_version')[0]!.user_version).toBe(1)
+    expect(db.selectObjects('PRAGMA user_version')[0]!.user_version).toBe(2)
   })
 
   it('creates, saves, lists and cascades deletes', () => {
@@ -70,5 +70,30 @@ describe('repo', () => {
     expect(repo.getSettings(db)).toEqual({})
     repo.setSetting(db, 'theme', 'light')
     expect(repo.getSettings(db)).toEqual({ theme: 'light' })
+  })
+})
+
+describe('skills and MCP servers', () => {
+  it('upserts skills by name and stores servers without leaking headers into export', () => {
+    repo.saveSkill(db, { id: 's1', name: 'review', description: 'Review code', body: 'Do X', enabled: true, source: 'a.md' })
+    repo.saveSkill(db, { id: 's2', name: 'review', description: 'Review code v2', body: 'Do Y', enabled: true, source: 'b.md' })
+    expect(repo.listSkills(db)).toHaveLength(1)
+    expect(repo.listSkills(db)[0]!.body).toBe('Do Y')
+
+    repo.saveMcpServer(db, {
+      id: 'm1',
+      name: 'github',
+      url: 'https://x/mcp',
+      transport: 'http',
+      kind: 'remote',
+      headers: { Authorization: 'Bearer secret' },
+      enabled: true,
+      disabledTools: ['delete_repo'],
+    })
+    expect(repo.listMcpServers(db)[0]!.disabledTools).toEqual(['delete_repo'])
+    expect(JSON.stringify(repo.exportAll(db))).not.toContain('secret')
+    repo.clearAll(db)
+    expect(repo.listSkills(db)).toEqual([])
+    expect(repo.listMcpServers(db)).toEqual([])
   })
 })

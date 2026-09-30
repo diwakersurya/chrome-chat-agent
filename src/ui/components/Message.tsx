@@ -2,9 +2,11 @@ import * as stylex from '@stylexjs/stylex'
 import type { UIMessage } from '@tanstack/ai-react'
 import { memo, useState } from 'react'
 import { parsePageContext } from '../pageContext'
+import { parseSkillPart } from '../../core/skills/skills'
 import { color, font, motion, radius, size, space } from '../tokens.stylex'
 import { Button } from './Button'
 import { CopyButton } from './CopyButton'
+import { Gated, useFeature } from './Gated'
 import { Icon } from './Icon'
 import { Markdown } from './Markdown'
 import { TaskMenu, type TaskId } from './TaskMenu'
@@ -13,7 +15,7 @@ export function messageText(m: UIMessage) {
   return m.parts
     .filter((p) => p.type === 'text')
     .map((p) => (p as { content: string }).content)
-    .filter((t) => !parsePageContext(t))
+    .filter((t) => !parsePageContext(t) && !parseSkillPart(t))
     .join('\n\n')
 }
 
@@ -29,6 +31,7 @@ interface Props {
 
 export const Message = memo(function Message({ message, streaming, busy, tasks, onEdit, onRegenerate, onTask }: Props) {
   const [editing, setEditing] = useState(false)
+  const tasksOk = useFeature('tasks').available && tasks.length > 0
   const isUser = message.role === 'user'
   const text = messageText(message)
   const taskLabel = (message.metadata as { task?: string } | undefined)?.task
@@ -49,6 +52,14 @@ export const Message = memo(function Message({ message, streaming, busy, tasks, 
             case 'text': {
               const page = parsePageContext(part.content)
               if (page) return <PageChip key={i} title={page.title} url={page.url} />
+              const skill = parseSkillPart(part.content)
+              if (skill)
+                return (
+                  <span key={i} {...stylex.props(styles.chip)}>
+                    <Icon name="book" />
+                    <span {...stylex.props(styles.chipText)}>/{skill.name}</span>
+                  </span>
+                )
               return isUser ? (
                 <p key={i} {...stylex.props(styles.userText)}>
                   {part.content}
@@ -84,7 +95,13 @@ export const Message = memo(function Message({ message, streaming, busy, tasks, 
           ) : (
             !taskLabel && <Button icon="refresh" label="Regenerate" disabled={busy} onClick={() => onRegenerate(message.id)} />
           )}
-          {tasks.length > 0 && <TaskMenu tasks={tasks} disabled={busy} onPick={(t) => onTask(message.id, t)} />}
+          {tasksOk ? (
+            <TaskMenu tasks={tasks} disabled={busy} onPick={(t) => onTask(message.id, t)} />
+          ) : (
+            <Gated feature="tasks">
+              <Button icon="wand" label="Transform with Chrome AI" />
+            </Gated>
+          )}
         </div>
       )}
     </article>

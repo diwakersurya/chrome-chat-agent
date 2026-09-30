@@ -5,17 +5,20 @@ import { stream, useChat, type UIMessage } from '@tanstack/ai-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Capabilities } from '../../core/ai/capabilities'
 import { usable } from '../../core/ai/capabilities'
-import { ChromeTextAdapter, MAX_TOOL_STEPS, type ChromeModelOptions } from '../../core/ai/chromeAdapter'
+import { ChromeTextAdapter, MAX_TOOL_STEPS, routerPrompt, type ChromeModelOptions } from '../../core/ai/chromeAdapter'
 import type { ContextStats } from '../../core/ai/sessionCache'
 import { SessionCache } from '../../core/ai/sessionCache'
 import * as task from '../../core/ai/taskApis'
-import { db } from '../../core/db/client'
+import { db, useDbQuery } from '../../core/db/client'
 import type { StoredMessage } from '../../core/db/repo'
 import { buildTools } from '../../core/tools/registry'
 import { usePlatform, type PageContext } from '../../platform/platform'
 import type { Settings } from '../state'
 import { contextBudget } from '../contextBudget'
 import { formatPageContext } from '../pageContext'
+import { formatSkillPart } from '../../core/skills/skills'
+import { useToolSources } from '../useToolSources'
+import { ApprovalCards, SourceChips } from './ToolBar'
 import { color, font, radius, size, space } from '../tokens.stylex'
 import { Button } from './Button'
 import { Composer, type Draft } from './Composer'
@@ -82,16 +85,19 @@ async function makeTitle(firstUserText: string) {
 
 function draftToContent(d: Draft) {
   const parts: any[] = []
+  for (const sk of d.skills) parts.push({ type: 'text', content: formatSkillPart(sk) })
   if (d.page) parts.push({ type: 'text', content: formatPageContext(d.page, d.page.body) })
   for (const a of d.attachments) parts.push({ type: a.kind, source: { type: 'data', value: a.data, mimeType: a.mimeType } })
   if (d.text) parts.push({ type: 'text', content: d.text })
-  return parts.length === 1 && parts[0].type === 'text' && !d.page ? d.text : parts
+  return parts.length === 1 && parts[0].type === 'text' && !d.page && !d.skills.length ? d.text : parts
 }
 
 /** A user message's parts as sendable content (drops UI-only fields). */
 function userContent(m: UIMessage, replaceText?: string) {
   const media = m.parts.filter((p: any) => p.type === 'image' || p.type === 'audio')
-  const pages = m.parts.filter((p: any) => p.type === 'text' && p.content.startsWith('<page '))
+  const pages = m.parts.filter(
+    (p: any) => p.type === 'text' && (p.content.startsWith('<page ') || p.content.startsWith('<skill ')),
+  )
   const text = replaceText ?? messageText(m)
   return [...pages, ...media, ...(text ? [{ type: 'text', content: text }] : [])] as any[]
 }
@@ -107,14 +113,31 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
   /** the saved history can't be loaded into any session (e.g. one message is bigger than the window) */
   const [overflow, setOverflow] = useState(false)
 
-  const tools = useMemo(
+  const sources = useToolSources()
+  const { data: allSkills } = useDbQuery(() => db.listSkills(), [], ['skills'])
+  const skills = useMemo(() => (allSkills ?? []).filter((x) => x.enabled), [allSkills])
+  const builtin = useMemo(
     () => (settings.toolsEnabled ? buildTools({ caps, platform, db }, settings.disabledTools) : []),
     [caps, platform, settings.toolsEnabled, settings.disabledTools],
   )
+  // external tools are chosen per chat with "@", so they apply even if built-ins are off
+  const tools = useMemo(() => [...builtin, ...sources.tools], [builtin, sources.tools])
+
+  // how much model memory the router prompt for these tools costs
+  const [toolTokens, setToolTokens] = useState<number>()
+  useEffect(() => {
+    if (!sources.tools.length) return setToolTokens(undefined)
+    let live = true
+    adapter.sessions.measure(conversationId, routerPrompt(tools as never)).then(
+      (m) => live && setToolTokens(m.tokens),
+      () => undefined,
+    )
+    return () => void (live = false)
+  }, [tools, sources.tools.length, conversationId])
   const modelOptions: ChromeModelOptions = {
     conversationId,
     systemPrompt: settings.systemPrompt,
-    toolsEnabled: settings.toolsEnabled,
+    toolsEnabled: settings.toolsEnabled || sources.tools.length > 0,
     image: caps.image,
     audio: caps.audio,
     ...(caps.sampling && settings.temperature != null && settings.topK != null
@@ -279,7 +302,7 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
         }}
       >
         <div {...stylex.props(styles.column)} aria-live="polite">
-          {!messages.length && <EmptyState hasTab={!!platform.getPageContext} onPick={(text) => send({ text, attachments: [] })} />}
+          {!messages.length && <EmptyState hasTab={!!platform.getPageContext} onPick={(text) => send({ text, attachments: [], skills: [] })} />}
           {messages.map((m, i) =>
             m.role === 'assistant' && m !== last && !m.parts.some((p: any) => p.type !== 'text' || p.content.trim()) ? null : (
             <div key={m.id}>
@@ -313,6 +336,8 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
         </div>
       </div>
       <div {...stylex.props(styles.composer)}>
+        <ApprovalCards />
+        <SourceChips chips={sources.chips} onRemove={sources.remove} dropped={sources.dropped} toolTokens={toolTokens} />
         {overflow && (
           <div role="status" {...stylex.props(styles.fullNotice)}>
             <Icon name="alert" />
@@ -346,6 +371,9 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
           inputRef={inputRef}
           measure={measure}
           full={overflow}
+          skills={skills}
+          sources={sources.items}
+          onAddSource={sources.add}
         />
       </div>
     </div>

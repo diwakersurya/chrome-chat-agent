@@ -7,7 +7,7 @@ export interface Db {
   transaction<T>(fn: (db: Db) => T): T
 }
 
-export type Table = 'conversations' | 'messages' | 'settings'
+export type Table = 'conversations' | 'messages' | 'settings' | 'skills' | 'mcp_servers'
 
 export interface ConversationRow {
   id: string
@@ -28,6 +28,31 @@ export interface SearchHit {
   conversationId: string
   title: string
   snippet: string
+}
+
+export interface SkillRow {
+  id: string
+  name: string
+  description: string
+  body: string
+  enabled: boolean
+  /** file name or "manual" */
+  source: string
+  updatedAt: number
+}
+
+export interface McpServerRow {
+  id: string
+  name: string
+  url: string
+  transport: 'http' | 'sse'
+  kind: 'remote' | 'local'
+  /** for local servers: the stdio command the bridge runs */
+  command?: string
+  /** auth headers; stay in this browser, never exported */
+  headers: Record<string, string>
+  enabled: boolean
+  disabledTools: string[]
 }
 
 export interface ExportedConversation extends ConversationRow {
@@ -65,6 +90,29 @@ const MIGRATIONS: string[] = [
     INSERT INTO messages_fts(messages_fts, rowid, text) VALUES ('delete', old.rowid, old.text);
     INSERT INTO messages_fts(rowid, text) VALUES (new.rowid, new.text);
   END;
+  `,
+  `
+  CREATE TABLE skills (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    description TEXT NOT NULL,
+    body TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE mcp_servers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    url TEXT NOT NULL,
+    transport TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    command TEXT,
+    headers TEXT NOT NULL DEFAULT '{}',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    disabled_tools TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL
+  );
   `,
 ]
 
@@ -235,6 +283,95 @@ export function clearAll(db: Db): Table[] {
   db.transaction((tx) => {
     tx.exec('DELETE FROM conversations')
     tx.exec('DELETE FROM settings')
+    tx.exec('DELETE FROM skills')
+    tx.exec('DELETE FROM mcp_servers')
   })
-  return ['conversations', 'messages', 'settings']
+  return ['conversations', 'messages', 'settings', 'skills', 'mcp_servers']
+}
+
+// ---------- skills ----------
+
+const skill = (r: Record<string, unknown>): SkillRow => ({
+  id: r.id as string,
+  name: r.name as string,
+  description: r.description as string,
+  body: r.body as string,
+  enabled: !!r.enabled,
+  source: r.source as string,
+  updatedAt: r.updated_at as number,
+})
+
+export function listSkills(db: Db): SkillRow[] {
+  return db.selectObjects('SELECT * FROM skills ORDER BY name').map(skill)
+}
+
+/** Insert or replace by name (re-importing a skill updates it). */
+export function saveSkill(db: Db, s: Omit<SkillRow, 'updatedAt'>, now = Date.now()): Table[] {
+  db.exec(
+    `INSERT INTO skills (id, name, description, body, enabled, source, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(name) DO UPDATE SET description = excluded.description, body = excluded.body,
+       enabled = excluded.enabled, source = excluded.source, updated_at = excluded.updated_at`,
+    { bind: [s.id, s.name, s.description, s.body, s.enabled ? 1 : 0, s.source, now] },
+  )
+  return ['skills']
+}
+
+export function updateSkill(db: Db, id: string, s: Omit<SkillRow, 'id' | 'updatedAt'>, now = Date.now()): Table[] {
+  db.exec('UPDATE skills SET name = ?, description = ?, body = ?, enabled = ?, source = ?, updated_at = ? WHERE id = ?', {
+    bind: [s.name, s.description, s.body, s.enabled ? 1 : 0, s.source, now, id],
+  })
+  return ['skills']
+}
+
+export function deleteSkill(db: Db, id: string): Table[] {
+  db.exec('DELETE FROM skills WHERE id = ?', { bind: [id] })
+  return ['skills']
+}
+
+// ---------- MCP servers ----------
+
+const server = (r: Record<string, unknown>): McpServerRow => ({
+  id: r.id as string,
+  name: r.name as string,
+  url: r.url as string,
+  transport: r.transport as McpServerRow['transport'],
+  kind: r.kind as McpServerRow['kind'],
+  ...(r.command ? { command: r.command as string } : {}),
+  headers: JSON.parse(r.headers as string),
+  enabled: !!r.enabled,
+  disabledTools: JSON.parse(r.disabled_tools as string),
+})
+
+export function listMcpServers(db: Db): McpServerRow[] {
+  return db.selectObjects('SELECT * FROM mcp_servers ORDER BY created_at').map(server)
+}
+
+export function saveMcpServer(db: Db, s: McpServerRow, now = Date.now()): Table[] {
+  db.exec(
+    `INSERT INTO mcp_servers (id, name, url, transport, kind, command, headers, enabled, disabled_tools, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET name = excluded.name, url = excluded.url, transport = excluded.transport,
+       kind = excluded.kind, command = excluded.command, headers = excluded.headers, enabled = excluded.enabled,
+       disabled_tools = excluded.disabled_tools`,
+    {
+      bind: [
+        s.id,
+        s.name,
+        s.url,
+        s.transport,
+        s.kind,
+        s.command ?? null,
+        JSON.stringify(s.headers),
+        s.enabled ? 1 : 0,
+        JSON.stringify(s.disabledTools),
+        now,
+      ],
+    },
+  )
+  return ['mcp_servers']
+}
+
+export function deleteMcpServer(db: Db, id: string): Table[] {
+  db.exec('DELETE FROM mcp_servers WHERE id = ?', { bind: [id] })
+  return ['mcp_servers']
 }
