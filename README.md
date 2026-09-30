@@ -2,7 +2,7 @@
 
 **[Open the web app](https://diwakersurya.github.io/chrome-chat-agent/)** · [Download the extension](https://github.com/diwakersurya/chrome-chat-agent/releases/latest)
 
-A private chat agent that runs entirely on **Chrome's built-in AI** (Gemini Nano). There is no server, no API key and no network call. Your messages, attachments and history stay in your browser.
+A private chat agent that runs entirely on **Chrome's built-in AI**: Gemini Nano, or Gemma 4 on Chrome 154+ with `#gemma4-for-built-in-ai`. There is no server, no API key and no network call. Your messages, attachments and history stay in your browser.
 
 It ships two ways from one React codebase:
 
@@ -41,7 +41,15 @@ It ships two ways from one React codebase:
   - `chrome://flags/#optimization-guide-on-device-model`
   - `chrome://flags/#prompt-api-for-gemini-nano`
 - **Status:** `chrome://on-device-internals` shows the model's state.
-- **Optional task APIs:** Writer, Rewriter and Proofreader may still need their own flags (`#writer-api`, `#rewriter-api`, `#proofreader-api`). The app hides whatever isn't available.
+- **Optional task APIs:** Writer, Rewriter and Proofreader may still need their own flags (`#writer-api`, `#rewriter-api`, `#proofreader-api`). Any task API that is missing or failing falls back to the Prompt API.
+
+### Chrome 154+ with Gemma 4
+
+`chrome://flags/#gemma4-for-built-in-ai` switches the built-in APIs to Gemma 4. It needs a GPU. Gemma 4 runs with speculative decoding (MTP), which changes three things; the app detects these and adapts automatically:
+
+- The model reports `unavailable` unless requests ask for `samplingMode: 'most-predictable'`, so temperature and top-K are fixed.
+- `responseConstraint` (JSON-schema output) is rejected, so tool routing uses a plain JSON prompt and a lenient parser.
+- Summarizer, Writer and Rewriter fail with "Failed to count tokens". A failing Summarizer also resets the model service and kills open chat sessions. So these tasks run on the Prompt API instead, and a chat session that dies is rebuilt from history and retried once.
 
 ## Develop
 
@@ -66,7 +74,7 @@ SQLite WASM (OPFS, worker) ◀─ typed RPC ◀─ useDbQuery (re-runs on table 
 ```
 
 - **Model layer:** [TanStack AI](https://tanstack.com/ai) runs fully in the browser. A custom `ChromeTextAdapter` maps its AG-UI stream events onto the Prompt API.
-- **Tool calls:** Gemini Nano has no native function calling. Before each reply, the adapter asks a cloned session to choose between "answer" and "tool" using `responseConstraint`. When the model picks a tool, the adapter emits TanStack tool-call events, and TanStack runs the tool.
+- **Tool calls:** the built-in model has no native function calling. Before each reply, the adapter asks a cloned session to choose between "answer" and "tool", using `responseConstraint` when the model supports it and a plain JSON prompt otherwise. When the model picks a tool, the adapter emits TanStack tool-call events, and TanStack runs the tool.
 - **Storage:** chats are stored with the official [`@sqlite.org/sqlite-wasm`](https://sqlite.org/wasm) using the `opfs-sahpool` VFS. That VFS needs no COOP/COEP headers, so it works on GitHub Pages and in extension pages. Search uses FTS5.
 - **Styling:** [StyleX](https://stylexjs.com) with typed design tokens and system fonts. Nothing is loaded from a CDN.
 

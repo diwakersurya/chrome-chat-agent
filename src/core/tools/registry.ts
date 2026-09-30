@@ -117,22 +117,22 @@ const ENTRIES: Entry[] = [
   },
   {
     meta: { name: 'summarize_text', label: 'Summarize', description: 'Chrome Summarizer API.' },
-    enabled: (e) => usable(e.caps.summarizer),
+    enabled: (e) => usable(e.caps.prompt) || usable(e.caps.summarizer),
     make: summarizeText,
   },
   {
     meta: { name: 'translate_text', label: 'Translate', description: 'Chrome Translator API.' },
-    enabled: (e) => e.caps.translator,
+    enabled: (e) => usable(e.caps.prompt) || e.caps.translator,
     make: translateText,
   },
   {
     meta: { name: 'rewrite_text', label: 'Rewrite', description: 'Chrome Rewriter API.' },
-    enabled: (e) => usable(e.caps.rewriter),
+    enabled: (e) => usable(e.caps.prompt) || usable(e.caps.rewriter),
     make: rewriteText,
   },
   {
     meta: { name: 'proofread_text', label: 'Proofread', description: 'Chrome Proofreader API.' },
-    enabled: (e) => usable(e.caps.proofreader),
+    enabled: (e) => usable(e.caps.prompt) || usable(e.caps.proofreader),
     make: proofreadText,
   },
   {

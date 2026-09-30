@@ -7,8 +7,10 @@ export interface Capabilities {
   prompt: Availability
   image: boolean
   audio: boolean
-  /** temperature/topK are honoured in extensions only */
+  /** temperature/topK are honoured in extensions only, and not with speculative decoding */
   sampling: boolean
+  /** the model only runs with deterministic sampling (e.g. Gemma 4 with MTP in Chrome 154+) */
+  deterministicOnly: boolean
   summarizer: Availability
   translator: boolean
   languageDetector: Availability
@@ -27,6 +29,16 @@ export const outputLanguage = () => {
 }
 export const expectedOutputs = () => [{ type: 'text' as const, languages: [outputLanguage()] }]
 
+// Chrome 154's Gemma 4 backend uses speculative decoding (MTP) and reports
+// "unavailable" unless sessions ask for deterministic sampling. We probe once
+// and then send the same sampling options with every availability()/create().
+const DETERMINISTIC = { samplingMode: 'most-predictable' } as const
+let requiredSampling: Partial<typeof DETERMINISTIC> = {}
+
+/** Options every LanguageModel.availability()/create() call must include. */
+export const baseModelOptions = () => ({ expectedOutputs: expectedOutputs(), ...requiredSampling })
+export const isDeterministicOnly = () => 'samplingMode' in requiredSampling
+
 async function safe(fn: () => Promise<Availability>): Promise<Availability> {
   try {
     return await fn()
@@ -36,12 +48,24 @@ async function safe(fn: () => Promise<Availability>): Promise<Availability> {
 }
 
 const multimodal = (type: 'image' | 'audio') =>
-  safe(() => LanguageModel.availability({ expectedInputs: [{ type }], expectedOutputs: expectedOutputs() })).then(
+  safe(() => LanguageModel.availability({ expectedInputs: [{ type }], ...baseModelOptions() } as never)).then(
     (a) => a !== 'unavailable',
   )
 
+async function detectPrompt(): Promise<Availability> {
+  if (!has('LanguageModel')) return 'unavailable'
+  requiredSampling = {}
+  const plain = await safe(() => LanguageModel.availability(baseModelOptions()))
+  if (plain !== 'unavailable') return plain
+  const deterministic = await safe(() =>
+    LanguageModel.availability({ expectedOutputs: expectedOutputs(), ...DETERMINISTIC } as never),
+  )
+  if (deterministic !== 'unavailable') requiredSampling = DETERMINISTIC
+  return deterministic
+}
+
 export async function detectCapabilities(): Promise<Capabilities> {
-  const prompt = has('LanguageModel') ? await safe(() => LanguageModel.availability({ expectedOutputs: expectedOutputs() })) : 'unavailable'
+  const prompt = await detectPrompt()
   const ok = prompt !== 'unavailable'
   const [image, audio, summarizer, languageDetector, writer, rewriter, proofreader] = await Promise.all([
     ok ? multimodal('image') : false,
@@ -56,7 +80,8 @@ export async function detectCapabilities(): Promise<Capabilities> {
     prompt,
     image,
     audio,
-    sampling: __TARGET__ === 'ext' && ok,
+    sampling: __TARGET__ === 'ext' && ok && !isDeterministicOnly(),
+    deterministicOnly: isDeterministicOnly(),
     summarizer,
     translator: has('Translator'),
     languageDetector,

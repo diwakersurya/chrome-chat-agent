@@ -11,6 +11,10 @@ it('evaluates arithmetic with precedence, powers, functions and percent', () => 
   expect(calculate('200 * 15%')).toBe(30)
   expect(calculate('10 % 3')).toBe(1)
   expect(calculate('2 * pi')).toBeCloseTo(6.283, 3)
+  expect(calculate('17.5% of 2340')).toBeCloseTo(409.5, 6)
+  expect(calculate('3 x 4')).toBe(12)
+  expect(calculate('10 divided by 4 plus 1')).toBe(3.5)
+  expect(calculate('exp(0)')).toBe(1)
 })
 
 it('rejects anything that is not maths', () => {

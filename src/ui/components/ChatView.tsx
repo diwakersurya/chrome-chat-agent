@@ -48,12 +48,14 @@ const toStored = (m: UIMessage): StoredMessage => ({
 })
 
 function availableTasks(caps: Capabilities): TaskId[] {
+  // every task falls back to the Prompt API, so a working model enables them all
+  const prompt = usable(caps.prompt)
   const t: TaskId[] = []
-  if (usable(caps.summarizer)) t.push('summarize', 'key-points')
-  if (caps.translator)
+  if (prompt || usable(caps.summarizer)) t.push('summarize', 'key-points')
+  if (prompt || caps.translator)
     t.push('translate:en', 'translate:es', 'translate:fr', 'translate:de', 'translate:hi', 'translate:ja')
-  if (usable(caps.rewriter)) t.push('rewrite:more-formal', 'rewrite:more-casual', 'rewrite:shorter')
-  if (usable(caps.proofreader)) t.push('proofread')
+  if (prompt || usable(caps.rewriter)) t.push('rewrite:more-formal', 'rewrite:more-casual', 'rewrite:shorter')
+  if (prompt || usable(caps.proofreader)) t.push('proofread')
   return t
 }
 
@@ -292,7 +294,7 @@ function EmptyState({ hasTab, onPick }: { hasTab: boolean; onPick: (text: string
     <div {...stylex.props(styles.empty)}>
       <h1 {...stylex.props(styles.emptyTitle)}>What’s on your mind?</h1>
       <p {...stylex.props(styles.emptyText)}>
-        Gemini Nano runs inside Chrome on this device. Your messages, files and history stay here.
+        Chrome’s built-in model runs on this device. Your messages, files and history stay here.
       </p>
       <div {...stylex.props(styles.ideas)}>
         {ideas.map((t) => (

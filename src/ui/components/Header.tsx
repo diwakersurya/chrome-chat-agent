@@ -15,9 +15,9 @@ interface Props {
 }
 
 const STATUS: Record<Availability, string> = {
-  available: 'Gemini Nano is ready. Everything runs on this device.',
-  downloading: 'Gemini Nano is downloading.',
-  downloadable: 'Gemini Nano needs to be downloaded before you can chat.',
+  available: 'The on-device model is ready. Everything runs on this device.',
+  downloading: 'The on-device model is downloading.',
+  downloadable: 'The on-device model needs to be downloaded before you can chat.',
   unavailable: 'Chrome’s built-in model is not available on this device.',
 }
 
@@ -44,7 +44,7 @@ export function Header({ title, model, progress, stats, showMenu, onMenu, onSett
       )}
       <span role="img" aria-label={statusText} title={statusText} {...stylex.props(styles.chip)}>
         <span {...stylex.props(styles.dot, styles[model], model === 'downloading' && styles.ring(progress ?? 0))} />
-        <span {...stylex.props(styles.chipLabel)}>Nano</span>
+        <span {...stylex.props(styles.chipLabel)}>On-device</span>
       </span>
       <Button icon="settings" label="Settings" onClick={onSettings} />
     </header>

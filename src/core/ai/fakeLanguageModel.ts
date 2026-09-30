@@ -13,7 +13,12 @@ export interface FakeLog {
   prompted: unknown[][]
 }
 
-export function installFakeLanguageModel(script: FakeScript, window = 4096) {
+export interface FakeOptions {
+  /** mimic Chrome 154 + Gemma 4: needs samplingMode 'most-predictable', rejects responseConstraint */
+  mtp?: boolean
+}
+
+export function installFakeLanguageModel(script: FakeScript, window = 4096, opts: FakeOptions = {}) {
   const log: FakeLog = { created: [], appended: [], prompted: [] }
 
   class FakeSession {
@@ -22,7 +27,10 @@ export function installFakeLanguageModel(script: FakeScript, window = 4096) {
     constructor(public history: unknown[]) {
       this.contextUsage = JSON.stringify(history).length / 4
     }
-    async prompt(input: unknown[]) {
+    async prompt(input: unknown[], o: { responseConstraint?: unknown } = {}) {
+      if (opts.mtp && o.responseConstraint) {
+        throw new DOMException('Constrained decoding (responseConstraint) cannot be used with speculative decoding (MTP).', 'NotSupportedError')
+      }
       log.prompted.push(input)
       const r = script.prompts.shift()
       if (r == null) throw new Error('fake: no scripted prompt reply')
@@ -55,8 +63,12 @@ export function installFakeLanguageModel(script: FakeScript, window = 4096) {
   }
 
   ;(globalThis as any).LanguageModel = {
-    availability: async () => 'available',
-    create: async (o: { initialPrompts?: unknown[] } = {}) => {
+    availability: async (o: { samplingMode?: string } = {}) =>
+      opts.mtp && o.samplingMode !== 'most-predictable' ? 'unavailable' : 'available',
+    create: async (o: { initialPrompts?: unknown[]; samplingMode?: string } = {}) => {
+      if (opts.mtp && o.samplingMode !== 'most-predictable') {
+        throw new DOMException('The sampling options are incompatible with speculative decoding (MTP).', 'NotSupportedError')
+      }
       log.created.push({ initialPrompts: o.initialPrompts ?? [] })
       return new FakeSession([...(o.initialPrompts ?? [])])
     },

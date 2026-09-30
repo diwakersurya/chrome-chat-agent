@@ -3,7 +3,7 @@ import { BaseTextAdapter } from '@tanstack/ai/adapters'
 import type { StructuredOutputOptions, StructuredOutputResult } from '@tanstack/ai/adapters'
 import type { AdapterYieldChunk, ModelMessage, TextOptions } from '@tanstack/ai'
 import { SessionCache, type SessionConfig } from './sessionCache'
-import { expectedOutputs } from './capabilities'
+import { baseModelOptions } from './capabilities'
 
 export interface ChromeModelOptions extends SessionConfig {
   conversationId: string
@@ -46,13 +46,27 @@ export function routerPrompt(tools: AnyToolLike[]) {
     list,
     'Call a tool only when it clearly helps (current page, past chats, maths, dates, translation, summaries...).',
     'If a tool result above already answers the question, choose "answer".',
-    'Respond with JSON: {"action":"answer"} or {"action":"tool","tool":"<name>","args":{...}}.',
+    'Most messages need no tool: greetings, writing, explanations and opinions are answered directly.',
+    'Respond with ONLY a JSON object, no prose: {"action":"answer"} or {"action":"tool","tool":"<name>","args":{...}}.',
   ].join('\n')
 }
 
+/** Pull the first JSON object out of a reply that may be fenced or chatty. */
+export function extractJson(raw: string): unknown {
+  const text = raw.replace(/```(?:json)?/gi, '')
+  const start = text.indexOf('{')
+  const end = text.lastIndexOf('}')
+  if (start < 0 || end <= start) throw new Error('no JSON object')
+  return JSON.parse(text.slice(start, end + 1))
+}
+
+/** Chrome 154's Gemma backend (speculative decoding) rejects responseConstraint. */
+export const isConstraintUnsupported = (err: unknown) =>
+  err instanceof Error && err.name === 'NotSupportedError' && /constrain/i.test(err.message)
+
 export function parseDecision(raw: string, toolNames: string[]): Decision {
   try {
-    const d = JSON.parse(raw)
+    const d = extractJson(raw) as any
     if (d?.action === 'tool' && toolNames.includes(d.tool)) {
       return { action: 'tool', tool: d.tool, args: d.args && typeof d.args === 'object' ? d.args : {} }
     }
@@ -82,6 +96,8 @@ export class ChromeTextAdapter extends BaseTextAdapter<
   any
 > {
   readonly name = 'chrome-built-in'
+  /** flips to false the first time the model rejects a JSON-schema constraint */
+  private constraints = true
 
   constructor(readonly sessions: SessionCache = new SessionCache()) {
     super({}, 'gemini-nano')
@@ -98,6 +114,49 @@ export class ChromeTextAdapter extends BaseTextAdapter<
 
     yield ev('RUN_STARTED', { runId, threadId, model: this.model })
     try {
+      yield* this.turn(options, opts, runId, threadId, ev, signal)
+    } catch (err) {
+      if (signal?.aborted) {
+        yield ev('RUN_FINISHED', { runId, threadId, finishReason: 'stop' })
+        return
+      }
+      yield ev('RUN_ERROR', { runId, threadId, error: { message: errorMessage(err) } })
+    }
+  }
+
+  /** One turn; if Chrome killed the cached session (model service reset), rebuild once and retry. */
+  private async *turn(
+    options: TextOptions<ChromeModelOptions>,
+    opts: ChromeModelOptions,
+    runId: string,
+    threadId: string,
+    ev: (type: string, extra?: Record<string, unknown>) => AdapterYieldChunk,
+    signal?: AbortSignal,
+  ): AsyncGenerator<AdapterYieldChunk> {
+    let emitted = false
+    for (let attempt = 0; ; attempt++) {
+      try {
+        for await (const chunk of this.attempt(options, opts, runId, threadId, ev, signal)) {
+          emitted = true
+          yield chunk
+        }
+        return
+      } catch (err) {
+        if (attempt > 0 || emitted || !isSessionLost(err)) throw err
+        this.sessions.drop(opts.conversationId)
+      }
+    }
+  }
+
+  private async *attempt(
+    options: TextOptions<ChromeModelOptions>,
+    opts: ChromeModelOptions,
+    runId: string,
+    threadId: string,
+    ev: (type: string, extra?: Record<string, unknown>) => AdapterYieldChunk,
+    signal?: AbortSignal,
+  ): AsyncGenerator<AdapterYieldChunk> {
+    {
       const { session, last } = await this.sessions.prepare(opts.conversationId, options.messages, opts, signal)
 
       const tools = (options.tools ?? []) as AnyToolLike[]
@@ -105,16 +164,7 @@ export class ChromeTextAdapter extends BaseTextAdapter<
         opts.toolsEnabled !== false && tools.length > 0 && toolStepsSinceUser(options.messages) < MAX_TOOL_STEPS
       if (canRoute) {
         const names = tools.map((t) => t.name)
-        const probe = await session.clone({ signal })
-        let raw: string
-        try {
-          raw = await probe.prompt([last, { role: 'user', content: routerPrompt(tools) }], {
-            signal,
-            responseConstraint: routerSchema(names),
-          })
-        } finally {
-          probe.destroy()
-        }
+        const raw = await this.route(session, [last, { role: 'user', content: routerPrompt(tools) }], names, signal)
         const decision = parseDecision(raw, names)
         if (decision.action === 'tool') {
           const argsJson = JSON.stringify(decision.args)
@@ -150,26 +200,48 @@ export class ChromeTextAdapter extends BaseTextAdapter<
       }
       yield ev('TEXT_MESSAGE_END', { messageId })
       yield ev('RUN_FINISHED', { runId, threadId, finishReason: 'stop' })
-    } catch (err) {
-      if (signal?.aborted) {
-        yield ev('RUN_FINISHED', { runId, threadId, finishReason: 'stop' })
-        return
+    }
+  }
+
+  /** Router decision on a throwaway clone; schema-constrained when the model supports it. */
+  private async route(session: LanguageModel, input: LanguageModelMessage[], names: string[], signal?: AbortSignal) {
+    const probe = await session.clone({ signal })
+    try {
+      if (this.constraints) {
+        try {
+          return await probe.prompt(input, { signal, responseConstraint: routerSchema(names) })
+        } catch (err) {
+          if (!isConstraintUnsupported(err)) throw err
+          this.constraints = false
+        }
       }
-      yield ev('RUN_ERROR', { runId, threadId, error: { message: errorMessage(err) } })
+      return await probe.prompt(input, { signal })
+    } finally {
+      probe.destroy()
     }
   }
 
   async structuredOutput(o: StructuredOutputOptions<ChromeModelOptions>): Promise<StructuredOutputResult> {
-    const s = await LanguageModel.create({ expectedOutputs: expectedOutputs() })
+    const s = await LanguageModel.create(baseModelOptions())
     try {
       const text = o.chatOptions.messages.map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n')
-      const rawText = await s.prompt(text, { responseConstraint: o.outputSchema as Record<string, unknown> })
-      return { data: JSON.parse(rawText), rawText }
+      let rawText: string
+      try {
+        rawText = await s.prompt(text, { responseConstraint: o.outputSchema as Record<string, unknown> })
+      } catch (err) {
+        if (!isConstraintUnsupported(err)) throw err
+        rawText = await s.prompt(`${text}\n\nRespond with ONLY JSON matching this schema: ${JSON.stringify(o.outputSchema)}`)
+      }
+      return { data: extractJson(rawText), rawText }
     } finally {
       s.destroy()
     }
   }
 }
+
+/** The cached session died underneath us (e.g. the model service restarted). */
+export const isSessionLost = (err: unknown) =>
+  err instanceof Error && /destroyed|kErrorUnknown/i.test(err.message)
 
 export function errorMessage(err: unknown) {
   if (err instanceof DOMException) {

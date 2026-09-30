@@ -1,7 +1,7 @@
 import * as stylex from '@stylexjs/stylex'
 import type { UIMessage } from '@tanstack/ai-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { expectedOutputs } from '../core/ai/capabilities'
+import { baseModelOptions } from '../core/ai/capabilities'
 import type { ContextStats } from '../core/ai/sessionCache'
 import { db, useDbQuery } from '../core/db/client'
 import type { ConversationRow } from '../core/db/repo'
@@ -99,7 +99,7 @@ export function App({ platform }: { platform: Platform }) {
     setProgress(0)
     try {
       const s = await LanguageModel.create({
-        expectedOutputs: expectedOutputs(),
+        ...baseModelOptions(),
         monitor: (m) => m.addEventListener('downloadprogress', (e) => setProgress(e.loaded)),
       })
       s.destroy()

@@ -1,5 +1,5 @@
 import type { ModelMessage } from '@tanstack/ai'
-import { expectedOutputs } from './capabilities'
+import { baseModelOptions, isDeterministicOnly } from './capabilities'
 
 // One LanguageModel session per conversation. TanStack sends the full history
 // on every call; re-prompting a fresh session with the whole history each turn
@@ -150,7 +150,11 @@ export class SessionCache {
   }
 
   drop(conversationId: string) {
-    this.entries.get(conversationId)?.session.destroy()
+    try {
+      this.entries.get(conversationId)?.session.destroy()
+    } catch {
+      // already dead (model service restarted)
+    }
     this.entries.delete(conversationId)
   }
 
@@ -231,17 +235,18 @@ export class SessionCache {
     const expectedInputs: LanguageModelExpected[] = [{ type: 'text' }]
     if (config.image) expectedInputs.push({ type: 'image' })
     if (config.audio) expectedInputs.push({ type: 'audio' })
+    // custom temperature/topK can't be combined with the deterministic sampling MTP requires
     const sampling =
-      config.temperature != null && config.topK != null
+      config.temperature != null && config.topK != null && !isDeterministicOnly()
         ? { temperature: config.temperature, topK: config.topK }
         : {}
     const session = await LanguageModel.create({
+      ...baseModelOptions(),
       ...sampling,
       expectedInputs,
-      expectedOutputs: expectedOutputs(),
       signal,
-      initialPrompts: [...(system ? [{ role: 'system' as const, content: system }] : []), ...history] as never,
-    })
+      initialPrompts: [...(system ? [{ role: 'system' as const, content: system }] : []), ...history],
+    } as LanguageModelCreateOptions)
     const entry: Entry = {
       session,
       configKey,

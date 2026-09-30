@@ -17,7 +17,14 @@ const FUNCS: Record<string, (x: number) => number> = {
 const CONSTS: Record<string, number> = { pi: Math.PI, e: Math.E }
 
 export function calculate(expression: string): number {
-  const src = expression.replace(/,/g, '').replace(/×/g, '*').replace(/÷/g, '/').toLowerCase()
+  // small models phrase maths naturally: "17.5% of 2,340", "3 x 4", "10 divided by 4"
+  const src = expression
+    .toLowerCase()
+    .replace(/,/g, '')
+    .replace(/\bof\b|\btimes\b|×|(?<=[\d)\s])x(?=[\s\d(])/g, '*')
+    .replace(/\bdivided by\b|÷/g, '/')
+    .replace(/\bplus\b/g, '+')
+    .replace(/\bminus\b/g, '-')
   const tokens = src.match(/\d+\.?\d*(?:e[+-]?\d+)?|\.\d+|[a-z]+|\*\*|[-+*/%^()]/g)
   if (!tokens || tokens.join('') !== src.replace(/\s+/g, '')) throw new Error(`Cannot parse "${expression}"`)
   let i = 0

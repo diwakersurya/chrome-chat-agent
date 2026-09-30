@@ -18,7 +18,7 @@ export function ModelGate({ model, progress, error, onDownload }: Props) {
     <section {...stylex.props(styles.wrap)}>
       <h1 {...stylex.props(styles.title)}>Download the on-device model</h1>
       <p {...stylex.props(styles.text)}>
-        Chrome keeps one copy of Gemini Nano for every site and extension that uses it. It needs to download once (a few
+        Chrome keeps one copy of its built-in model (Gemini Nano, or Gemma 4 when enabled) for every site and extension that uses it. It needs to download once (a few
         GB) and then works offline. After that, nothing you type leaves this device.
       </p>
       {model === 'downloading' ? (
@@ -28,7 +28,7 @@ export function ModelGate({ model, progress, error, onDownload }: Props) {
         </div>
       ) : (
         <Button variant="primary" icon="download" onClick={onDownload}>
-          Download Gemini Nano
+          Download the model
         </Button>
       )}
       {error && <p {...stylex.props(styles.error)}>{error}</p>}
@@ -40,7 +40,7 @@ function Unavailable() {
   return (
     <section {...stylex.props(styles.wrap)}>
       <h1 {...stylex.props(styles.title)}>Chrome’s built-in AI isn’t available here</h1>
-      <p {...stylex.props(styles.text)}>This app needs Gemini Nano, which ships with desktop Chrome. Check that:</p>
+      <p {...stylex.props(styles.text)}>This app needs Chrome’s built-in model (Gemini Nano or Gemma 4), which ships with desktop Chrome. Check that:</p>
       <ul {...stylex.props(styles.list)}>
         <li>
           You use Chrome {__TARGET__ === 'ext' ? '138' : '148'} or newer on Windows, macOS, Linux or a Chromebook Plus.
@@ -49,6 +49,9 @@ function Unavailable() {
         <li>
           On older Chrome versions, enable <code {...stylex.props(styles.code)}>chrome://flags/#optimization-guide-on-device-model</code> and{' '}
           <code {...stylex.props(styles.code)}>chrome://flags/#prompt-api-for-gemini-nano</code>, then restart Chrome.
+        </li>
+        <li>
+          On Chrome 154+, <code {...stylex.props(styles.code)}>chrome://flags/#gemma4-for-built-in-ai</code> switches the built-in APIs to Gemma 4. It needs a GPU.
         </li>
         <li>
           Open <code {...stylex.props(styles.code)}>chrome://on-device-internals</code> to see the model’s status.

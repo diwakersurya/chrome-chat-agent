@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { chat, maxIterations, toolDefinition } from '@tanstack/ai'
 import { z } from 'zod'
 import { ChromeTextAdapter, parseDecision, toolStepsSinceUser } from './chromeAdapter'
+import { detectCapabilities } from './capabilities'
 import { installFakeLanguageModel } from './fakeLanguageModel'
 import { SessionCache } from './sessionCache'
 
@@ -129,5 +130,46 @@ describe('context compaction', () => {
     expect(last[0].content).toContain('SUMMARY')
     expect(last.length).toBeLessThanOrEqual(5) // system + 4 recent turns
     expect(adapter.sessions.stats('c4')!.compacted).toBeGreaterThan(0)
+  })
+})
+
+describe('Chrome 154 + Gemma 4 (speculative decoding)', () => {
+  it('parses fenced or chatty router JSON', () => {
+    expect(parseDecision('```json\n{"action":"tool","tool":"add","args":{"a":1}}\n```', ['add'])).toEqual({
+      action: 'tool',
+      tool: 'add',
+      args: { a: 1 },
+    })
+    expect(parseDecision('Sure! {"action":"answer"}', ['add'])).toEqual({ action: 'answer' })
+  })
+
+  it('negotiates deterministic sampling and falls back from responseConstraint', async () => {
+    const log = installFakeLanguageModel(
+      {
+        prompts: ['```json\n{"action":"tool","tool":"add","args":{"a":2,"b":3}}\n```', '{"action":"answer"}'],
+        streams: ['The sum is 5.'],
+      },
+      4096,
+      { mtp: true },
+    )
+    const caps = await detectCapabilities()
+    expect(caps.prompt).toBe('available')
+    expect(caps.deterministicOnly).toBe(true)
+    expect(caps.sampling).toBe(false)
+
+    const adapter = new ChromeTextAdapter()
+    const events = await collect(
+      chat({
+        adapter,
+        messages: [{ role: 'user', content: 'what is 2+3?' }],
+        tools: [addTool],
+        agentLoopStrategy: maxIterations(5),
+        modelOptions: { conversationId: 'mtp' },
+      }) as AsyncIterable<any>,
+    )
+    expect(events.find((e) => e.type === 'RUN_ERROR')).toBeUndefined()
+    expect(events.map((e) => e.type)).toContain('TOOL_CALL_START')
+    expect(textOf(events)).toBe('The sum is 5.')
+    expect(log.created).toHaveLength(1)
   })
 })

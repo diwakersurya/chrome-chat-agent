@@ -166,6 +166,16 @@ export function SettingsPanel({ open, onClose, settings, update, caps, storage, 
           </section>
         )}
 
+        {caps.deterministicOnly && (
+          <section {...stylex.props(styles.section)}>
+            <h3 {...stylex.props(styles.h3)}>Sampling</h3>
+            <p {...stylex.props(styles.hint)}>
+              Chrome runs this model with speculative decoding, which only allows its most predictable sampling mode, so
+              temperature and top-K can’t be changed.
+            </p>
+          </section>
+        )}
+
         <section {...stylex.props(styles.section)}>
           <h3 {...stylex.props(styles.h3)}>Agent tools</h3>
           <label {...stylex.props(styles.row)}>
