@@ -1,0 +1,68 @@
+/* Minimal reset + things StyleX can't target (html/body, third-party markup). */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  background: #f3f5f7;
+  color: #1b2633;
+  -webkit-font-smoothing: antialiased;
+}
+html[data-theme='dark'] body {
+  background: #11151a;
+  color: #e2e8ee;
+}
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme='light']) body {
+    background: #11151a;
+    color: #e2e8ee;
+  }
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  color: inherit;
+}
+:focus-visible {
+  outline: 2px solid #2a4f8266;
+  outline-offset: 2px;
+}
+
+/* Shiki dual-theme output */
+.shiki,
+.shiki span {
+  color: var(--shiki-light);
+  background-color: transparent !important;
+}
+html[data-theme='dark'] .shiki,
+html[data-theme='dark'] .shiki span {
+  color: var(--shiki-dark);
+}
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme='light']) .shiki,
+  html:not([data-theme='light']) .shiki span {
+    color: var(--shiki-dark);
+  }
+}
+.shiki {
+  margin: 0;
+  overflow-x: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

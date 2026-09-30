@@ -1,0 +1,22 @@
+name: Release extension
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run test
+      - run: bun run build:ext
+      - run: cd dist/ext && zip -r ../../local-chat-agent-${GITHUB_REF_NAME}.zip .
+      - run: gh release create "$GITHUB_REF_NAME" local-chat-agent-*.zip --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
