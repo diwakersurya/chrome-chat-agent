@@ -141,6 +141,13 @@ describe('Chrome 154 + Gemma 4 (speculative decoding)', () => {
       args: { a: 1 },
     })
     expect(parseDecision('Sure! {"action":"answer"}', ['add'])).toEqual({ action: 'answer' })
+    // shapes Gemma 4 actually produced / other common ones
+    const add = { action: 'tool', tool: 'add', args: { a: 1 } }
+    expect(parseDecision('```json\n{"action":"add","args":{"a":1}}\n```', ['add'])).toEqual(add)
+    expect(parseDecision('{"tool":"add","args":{"a":1}}', ['add'])).toEqual(add)
+    expect(parseDecision('{"name":"add","arguments":"{\\"a\\":1}"}', ['add'])).toEqual(add)
+    expect(parseDecision('{"tool_name":"add","parameters":{"a":1}}', ['add'])).toEqual(add)
+    expect(parseDecision('{"action":"answer","tool":"add"}', ['add'])).toEqual({ action: 'answer' })
   })
 
   it('negotiates deterministic sampling and falls back from responseConstraint', async () => {

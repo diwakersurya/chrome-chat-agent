@@ -68,8 +68,16 @@ export const isConstraintUnsupported = (err: unknown) =>
 export function parseDecision(raw: string, toolNames: string[]): Decision {
   try {
     const d = extractJson(raw) as any
-    if (d?.action === 'tool' && toolNames.includes(d.tool)) {
-      return { action: 'tool', tool: d.tool, args: d.args && typeof d.args === 'object' ? d.args : {} }
+    if (!d || typeof d !== 'object') return { action: 'answer' }
+    // small models vary the shape: {"action":"tool","tool":X}, {"action":X}, {"tool":X},
+    // {"name":X,"arguments":{…}} (OpenAI style) or {"tool_name":X,"parameters":{…}}
+    const tool = [d.tool, d.tool_name, d.name, d.function?.name, d.action].find(
+      (v) => typeof v === 'string' && toolNames.includes(v),
+    )
+    if (tool && d.action !== 'answer') {
+      const args = d.args ?? d.arguments ?? d.parameters ?? d.input ?? d.function?.arguments ?? {}
+      const parsed = typeof args === 'string' ? JSON.parse(args) : args
+      return { action: 'tool', tool, args: parsed && typeof parsed === 'object' ? parsed : {} }
     }
   } catch {
     // invalid JSON from the model → just answer
