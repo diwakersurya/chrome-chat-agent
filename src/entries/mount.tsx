@@ -5,7 +5,6 @@ import { App } from '../ui/App'
 import type { Platform } from '../platform/platform'
 
 export function mount(platform: Platform) {
-  if (import.meta.env.DEV) void import('virtual:stylex:css-only')
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
       <App platform={platform} />
