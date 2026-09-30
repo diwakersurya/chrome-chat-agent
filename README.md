@@ -1,5 +1,7 @@
 # Local Chat Agent
 
+**[Open the web app](https://diwakersurya.github.io/chrome-chat-agent/)** · [Download the extension](https://github.com/diwakersurya/chrome-chat-agent/releases/latest)
+
 A private chat agent that runs entirely on **Chrome's built-in AI** (Gemini Nano). There is no server, no API key and no network call. Your messages, attachments and history stay in your browser.
 
 It ships two ways from one React codebase:
@@ -24,7 +26,7 @@ It ships two ways from one React codebase:
 ### Web app
 
 1. Use desktop Chrome 148 or newer.
-2. Open the GitHub Pages site. When prompted, click **Download Gemini Nano** once.
+2. Open [diwakersurya.github.io/chrome-chat-agent](https://diwakersurya.github.io/chrome-chat-agent/). When prompted, click **Download Gemini Nano** once.
 
 ### Extension
 
