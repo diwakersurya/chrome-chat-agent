@@ -7,6 +7,7 @@ import type { PageContext } from '../../platform/platform'
 import { usePlatform } from '../../platform/platform'
 import { audioAttachment, imageAttachment, startRecording, type Attachment } from '../attachments'
 import { PAGE_TEXT_LIMIT } from '../pageContext'
+import { RESERVE, type DraftMeasure } from '../../core/ai/sessionCache'
 import { color, font, motion, radius, size, space } from '../tokens.stylex'
 import { Button } from './Button'
 import { Icon } from './Icon'
@@ -25,11 +26,15 @@ interface Props {
   /** page context pushed in from outside (context-menu selection) */
   incomingPage?: PageContext
   inputRef?: React.RefObject<HTMLTextAreaElement | null>
+  /** count a draft's tokens against this chat's remaining context */
+  measure?: (text: string) => Promise<DraftMeasure>
+  /** the chat can't continue (its history no longer fits the model) */
+  full?: boolean
 }
 
 type Recorder = Awaited<ReturnType<typeof startRecording>>
 
-export function Composer({ caps, busy, onSend, onStop, incomingPage, inputRef }: Props) {
+export function Composer({ caps, busy, onSend, onStop, incomingPage, inputRef, measure, full }: Props) {
   const platform = usePlatform()
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -95,7 +100,25 @@ export function Composer({ caps, busy, onSend, onStop, incomingPage, inputRef }:
     }
   }
 
-  const canSend = !busy && !recorder && pageState === 'idle' && (text.trim() || attachments.length || page)
+  // Live token estimate so an oversized message is caught before sending.
+  const [estimate, setEstimate] = useState<DraftMeasure>()
+  const draftText = [page?.body, text].filter(Boolean).join('\n\n')
+  useEffect(() => {
+    if (!measure || draftText.length < 400) return setEstimate(undefined)
+    let live = true
+    const t = setTimeout(() => {
+      measure(draftText).then((m) => live && setEstimate(m), () => live && setEstimate(undefined))
+    }, 350)
+    return () => {
+      live = false
+      clearTimeout(t)
+    }
+  }, [draftText, measure])
+  const tooLong = !!estimate && estimate.tokens + RESERVE > estimate.window
+  const willCompact = !!estimate && !tooLong && estimate.usage + estimate.tokens + RESERVE > estimate.window
+
+  const canSend =
+    !busy && !full && !recorder && pageState === 'idle' && !tooLong && (text.trim() || attachments.length || page)
 
   const send = () => {
     if (!canSend) return
@@ -153,7 +176,14 @@ export function Composer({ caps, busy, onSend, onStop, incomingPage, inputRef }:
       <textarea
         ref={inputRef}
         value={text}
-        placeholder={recorder ? 'Recording… press the mic again to stop' : 'Message your on-device model'}
+        disabled={full}
+        placeholder={
+          full
+            ? 'This chat is full. Start a new chat to continue.'
+            : recorder
+              ? 'Recording… press the mic again to stop'
+              : 'Message your on-device model'
+        }
         aria-label="Message"
         rows={1}
         onChange={(e) => setText(e.target.value)}
@@ -212,6 +242,18 @@ export function Composer({ caps, busy, onSend, onStop, incomingPage, inputRef }:
             </span>
           )}
         </div>
+        {estimate && (
+          <span
+            role="status"
+            {...stylex.props(styles.estimate, willCompact && styles.estimateWarn, tooLong && styles.estimateBad)}
+          >
+            {tooLong
+              ? `Too long for the model: about ${estimate.tokens.toLocaleString()} tokens, limit ${(estimate.window - RESERVE).toLocaleString()}. Shorten or split it.`
+              : willCompact
+                ? `About ${estimate.tokens.toLocaleString()} tokens. Sending will summarize older messages.`
+                : `About ${estimate.tokens.toLocaleString()} tokens`}
+          </span>
+        )}
         {busy ? (
           <Button icon="stop" label="Stop generating" variant="quiet" onClick={onStop} />
         ) : (
@@ -259,6 +301,16 @@ const styles = stylex.create({
     animationDuration: '1.2s',
     animationIterationCount: 'infinite',
   },
+  estimate: {
+    fontFamily: font.ui,
+    fontSize: font.xs,
+    fontVariantNumeric: 'tabular-nums',
+    color: color.muted,
+    textAlign: 'end',
+    marginInlineStart: 'auto',
+  },
+  estimateWarn: { color: color.warn },
+  estimateBad: { color: color.danger, fontWeight: 600 },
   notice: {
     display: 'inline-flex',
     alignItems: 'center',

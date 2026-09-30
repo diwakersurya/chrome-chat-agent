@@ -142,8 +142,10 @@ export class ChromeTextAdapter extends BaseTextAdapter<
         }
         return
       } catch (err) {
-        if (attempt > 0 || emitted || !isSessionLost(err)) throw err
-        this.sessions.drop(opts.conversationId)
+        if (attempt > 0 || emitted) throw err
+        if (isContextFull(err)) await this.sessions.compactNow(opts.conversationId, options.messages, opts, signal)
+        else if (isSessionLost(err) || err instanceof EmptyReplyError) this.sessions.drop(opts.conversationId)
+        else throw err
       }
     }
   }
@@ -186,18 +188,25 @@ export class ChromeTextAdapter extends BaseTextAdapter<
       }
 
       const messageId = id()
-      yield ev('TEXT_MESSAGE_START', { messageId, role: 'assistant' })
       let full = ''
-      const stream = session.promptStreaming([last], { signal })
+      let rejected = false
       try {
+        const stream = session.promptStreaming([last], { signal })
         for await (const delta of stream as unknown as AsyncIterable<string>) {
+          // start the message lazily so a rejected prompt can still be retried cleanly
+          if (!full) yield ev('TEXT_MESSAGE_START', { messageId, role: 'assistant' })
           full += delta
           yield ev('TEXT_MESSAGE_CONTENT', { messageId, delta, content: full })
         }
+        if (!full && !signal?.aborted) throw new EmptyReplyError()
+      } catch (err) {
+        rejected = !full && !signal?.aborted
+        throw err
       } finally {
         // Record what the session actually saw, even for partial (stopped) replies.
-        this.sessions.commitAnswer(opts.conversationId, last, full)
+        if (!rejected) this.sessions.commitAnswer(opts.conversationId, last, full)
       }
+      if (!full) yield ev('TEXT_MESSAGE_START', { messageId, role: 'assistant' })
       yield ev('TEXT_MESSAGE_END', { messageId })
       yield ev('RUN_FINISHED', { runId, threadId, finishReason: 'stop' })
     }
@@ -238,6 +247,21 @@ export class ChromeTextAdapter extends BaseTextAdapter<
     }
   }
 }
+
+/**
+ * Chrome 154 + Gemma: a session that ingested a large append() can get into a
+ * state where every prompt returns "" (no error). A session rebuilt from the
+ * same history answers normally, so an empty reply triggers one rebuild.
+ */
+export class EmptyReplyError extends Error {
+  constructor() {
+    super('The model returned an empty reply. Try rephrasing, or start a new chat.')
+    this.name = 'EmptyReplyError'
+  }
+}
+
+/** The turn didn't fit in the context window (history + router prompt + reply room). */
+export const isContextFull = (err: unknown) => err instanceof Error && err.name === 'QuotaExceededError'
 
 /** The cached session died underneath us (e.g. the model service restarted). */
 export const isSessionLost = (err: unknown) =>

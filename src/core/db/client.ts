@@ -18,6 +18,8 @@ let seq = 0
 function getWorker() {
   if (worker) return worker
   worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
+  // release the OPFS lock immediately so the next page load can open the DB
+  addEventListener('pagehide', () => worker?.terminate(), { once: true })
   worker.onmessage = (e) => {
     const d = e.data
     if (d.type === 'change') {

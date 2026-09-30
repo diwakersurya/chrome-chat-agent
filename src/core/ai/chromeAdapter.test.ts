@@ -173,3 +173,91 @@ describe('Chrome 154 + Gemma 4 (speculative decoding)', () => {
     expect(log.created).toHaveLength(1)
   })
 })
+
+describe('warm', () => {
+  it('prepares a saved chat so the next message reuses the session', async () => {
+    const log = installFakeLanguageModel({ prompts: [], streams: ['A2'] })
+    const adapter = new ChromeTextAdapter()
+    const saved: any[] = [
+      { role: 'user', content: 'q1' },
+      { role: 'assistant', content: 'A1' },
+    ]
+    const modelOptions = { conversationId: 'w1', systemPrompt: 'be brief' }
+    const stats = await adapter.sessions.warm('w1', saved, modelOptions)
+    expect(stats!.usage).toBeGreaterThan(0)
+    await collect(chat({ adapter, messages: [...saved, { role: 'user', content: 'q2' }], modelOptions }) as AsyncIterable<any>)
+    expect(log.created).toHaveLength(1)
+  })
+})
+
+describe('context overflow on prompt', () => {
+  it('compacts and retries when the model rejects the turn as too long', async () => {
+    const log = installFakeLanguageModel({ prompts: [], streams: ['fits now'] })
+    const LM = (globalThis as any).LanguageModel
+    const create = LM.create
+    let first = true
+    LM.create = async (o: any) => {
+      const s = await create(o)
+      if (first) {
+        first = false
+        s.promptStreaming = () => {
+          throw new DOMException('The input is too large.', 'QuotaExceededError')
+        }
+      }
+      return s
+    }
+    const summaries: string[] = []
+    const adapter = new ChromeTextAdapter(new SessionCache(async (t) => (summaries.push(t), 'SUMMARY')))
+    const messages: any[] = []
+    for (let i = 0; i < 6; i++) messages.push({ role: 'user', content: `q${i}` }, { role: 'assistant', content: `a${i}` })
+    messages.push({ role: 'user', content: 'latest' })
+    const events = await collect(chat({ adapter, messages, modelOptions: { conversationId: 'q1' } }) as AsyncIterable<any>)
+    expect(events.find((e) => e.type === 'RUN_ERROR')).toBeUndefined()
+    expect(textOf(events)).toBe('fits now')
+    expect(summaries).toHaveLength(1)
+    expect(log.created).toHaveLength(2)
+  })
+})
+
+describe('empty replies', () => {
+  it('rebuilds the session and retries once when the model returns nothing', async () => {
+    const log = installFakeLanguageModel({ prompts: [], streams: ['', 'Hello!'] })
+    const adapter = new ChromeTextAdapter()
+    const events = await collect(
+      chat({ adapter, messages: [{ role: 'user', content: 'hi' }], modelOptions: { conversationId: 'e1' } }) as AsyncIterable<any>,
+    )
+    expect(events.find((e) => e.type === 'RUN_ERROR')).toBeUndefined()
+    expect(textOf(events)).toBe('Hello!')
+    expect(log.created).toHaveLength(2)
+  })
+
+  it('reports an error when the retry is empty too', async () => {
+    installFakeLanguageModel({ prompts: [], streams: ['', ''] })
+    const adapter = new ChromeTextAdapter()
+    const events = await collect(
+      chat({ adapter, messages: [{ role: 'user', content: 'hi' }], modelOptions: { conversationId: 'e2' } }) as AsyncIterable<any>,
+    )
+    const err = events.find((e) => e.type === 'RUN_ERROR')
+    expect(err?.message ?? err?.error?.message).toMatch(/empty reply/)
+  })
+})
+
+describe('history hygiene', () => {
+  it('never shows empty assistant turns to the model', async () => {
+    const log = installFakeLanguageModel({ prompts: [], streams: ['ok'] })
+    const adapter = new ChromeTextAdapter()
+    await collect(
+      chat({
+        adapter,
+        messages: [
+          { role: 'user', content: 'q1' },
+          { role: 'assistant', content: '' },
+          { role: 'user', content: 'q2' },
+        ],
+        modelOptions: { conversationId: 'h1' },
+      }) as AsyncIterable<any>,
+    )
+    const initial = log.created[0]!.initialPrompts as any[]
+    expect(initial.some((m) => m.role === 'assistant')).toBe(false)
+  })
+})

@@ -14,6 +14,7 @@ import type { StoredMessage } from '../../core/db/repo'
 import { buildTools } from '../../core/tools/registry'
 import { usePlatform, type PageContext } from '../../platform/platform'
 import type { Settings } from '../state'
+import { contextBudget } from '../contextBudget'
 import { formatPageContext } from '../pageContext'
 import { color, font, radius, size, space } from '../tokens.stylex'
 import { Button } from './Button'
@@ -36,6 +37,7 @@ interface Props {
   settings: Settings
   incomingPage?: PageContext
   onStats: (s: ContextStats | undefined) => void
+  onNewChat: () => void
   inputRef: React.RefObject<HTMLTextAreaElement | null>
 }
 
@@ -94,7 +96,7 @@ function userContent(m: UIMessage, replaceText?: string) {
   return [...pages, ...media, ...(text ? [{ type: 'text', content: text }] : [])] as any[]
 }
 
-export function ChatView({ conversationId, initialMessages, exists, caps, settings, incomingPage, onStats, inputRef }: Props) {
+export function ChatView({ conversationId, initialMessages, exists, caps, settings, incomingPage, onStats, onNewChat, inputRef }: Props) {
   const platform = usePlatform()
   const created = useRef(exists)
   const titled = useRef(exists)
@@ -102,6 +104,8 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
   const [taskBusy, setTaskBusy] = useState(false)
   const [taskError, setTaskError] = useState<string>()
   const [stats, setStats] = useState<ContextStats>()
+  /** the saved history can't be loaded into any session (e.g. one message is bigger than the window) */
+  const [overflow, setOverflow] = useState(false)
 
   const tools = useMemo(
     () => (settings.toolsEnabled ? buildTools({ caps, platform, db }, settings.disabledTools) : []),
@@ -142,6 +146,35 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
     initialMessages,
     connection,
   })
+
+  // Opening a saved chat: build its session now so the context budget shows immediately.
+  useEffect(() => {
+    if (!initialMessages.length) {
+      // new chat: show the model's full window before the first message
+      let live = true
+      adapter.sessions.measure(conversationId, ' ').then(
+        (m) => {
+          const s = { usage: 0, window: m.window, compacted: 0 }
+          if (live && !adapter.sessions.stats(conversationId)) (setStats(s), onStats(s))
+        },
+        () => undefined,
+      )
+      return () => void (live = false)
+    }
+    const ac = new AbortController()
+    adapter.sessions
+      .warm(conversationId, convertMessagesToModelMessages(initialMessages), live.current.modelOptions, ac.signal)
+      .then((s) => {
+        if (ac.signal.aborted) return
+        setStats(s)
+        onStats(s)
+      })
+      .catch((e: Error) => {
+        if (!ac.signal.aborted && /QuotaExceeded|too large|context/i.test(`${e.name} ${e.message}`)) setOverflow(true)
+      }) // other errors surface on the next send
+    return () => ac.abort()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversationId])
 
   // Persist whenever the conversation settles.
   useEffect(() => {
@@ -229,6 +262,7 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
   }, [messages, isLoading, taskBusy])
 
   const tasks = useMemo(() => availableTasks(caps), [caps])
+  const measure = useCallback((text: string) => adapter.sessions.measure(conversationId, text), [conversationId])
   const last = messages.at(-1)
   const waiting = (isLoading && last?.role === 'user') || taskBusy
   const busy = isLoading || taskBusy
@@ -246,7 +280,8 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
       >
         <div {...stylex.props(styles.column)} aria-live="polite">
           {!messages.length && <EmptyState hasTab={!!platform.getPageContext} onPick={(text) => send({ text, attachments: [] })} />}
-          {messages.map((m, i) => (
+          {messages.map((m, i) =>
+            m.role === 'assistant' && m !== last && !m.parts.some((p: any) => p.type !== 'text' || p.content.trim()) ? null : (
             <div key={m.id}>
               {compacted > 0 && i === compacted && (
                 <p {...stylex.props(styles.divider)}>Earlier messages were summarized to fit the model’s memory</p>
@@ -261,7 +296,8 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
                 onTask={onTask}
               />
             </div>
-          ))}
+            ),
+          )}
           {waiting && <Skeleton />}
           {(error || taskError) && !busy && (
             <div role="alert" {...stylex.props(styles.error)}>
@@ -277,7 +313,40 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
         </div>
       </div>
       <div {...stylex.props(styles.composer)}>
-        <Composer caps={caps} busy={busy} onSend={send} onStop={stop} incomingPage={incomingPage} inputRef={inputRef} />
+        {overflow && (
+          <div role="status" {...stylex.props(styles.fullNotice)}>
+            <Icon name="alert" />
+            <span {...stylex.props(styles.fullText)}>
+              This chat no longer fits in the model’s memory, so it can’t continue. Start a new chat to keep going.
+            </span>
+            <Button variant="quiet" icon="plus" onClick={onNewChat}>
+              Start new chat
+            </Button>
+          </div>
+        )}
+        {!overflow && stats && contextBudget(stats).level === 'full' && (
+          <div role="status" {...stylex.props(styles.fullNotice)}>
+            <Icon name="alert" />
+            <span {...stylex.props(styles.fullText)}>
+              This chat has used {contextBudget(stats).pct}% of the model’s memory (
+              {contextBudget(stats).left.toLocaleString()} tokens left). Older messages will be summarized to make room, which
+              can lose detail.
+            </span>
+            <Button variant="quiet" icon="plus" onClick={onNewChat}>
+              Start new chat
+            </Button>
+          </div>
+        )}
+        <Composer
+          caps={caps}
+          busy={busy}
+          onSend={send}
+          onStop={stop}
+          incomingPage={incomingPage}
+          inputRef={inputRef}
+          measure={measure}
+          full={overflow}
+        />
       </div>
     </div>
   )
@@ -336,6 +405,17 @@ const styles = stylex.create({
     paddingInline: space.lg,
     paddingBottom: space.lg,
   },
+  fullNotice: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: space.sm,
+    flexWrap: 'wrap',
+    marginBottom: space.sm,
+    color: color.warn,
+    fontFamily: font.ui,
+    fontSize: font.sm,
+  },
+  fullText: { flex: 1, minWidth: '200px', lineHeight: 1.4 },
   divider: {
     textAlign: 'center',
     fontFamily: font.ui,

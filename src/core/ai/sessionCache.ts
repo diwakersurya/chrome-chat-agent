@@ -37,7 +37,8 @@ interface Entry {
 type Summarise = (text: string) => Promise<string>
 
 const KEEP_RECENT = 4
-const RESERVE = 768
+/** tokens kept free for the model's reply */
+export const RESERVE = 768
 
 type ToolCallLike = { id: string; function: { name: string; arguments: string } }
 
@@ -136,10 +137,26 @@ async function toPromptMessage(messages: ModelMessage[], i: number): Promise<Lan
   return { role: 'user', content }
 }
 
+/**
+ * Empty assistant turns (failed or blank replies) make Gemma return "" for
+ * later prompts, so they are never shown to the model.
+ */
+export const modelVisible = (messages: ModelMessage[]) =>
+  messages.filter((m) => !(m.role === 'assistant' && !m.toolCalls?.length && !textOf(m.content).trim()))
+
 // ---------- cache ----------
+
+export interface DraftMeasure {
+  tokens: number
+  window: number
+  /** tokens the conversation already uses (0 for a chat without a session yet) */
+  usage: number
+}
 
 export class SessionCache {
   private entries = new Map<string, Entry>()
+  /** shared session used only to count tokens for chats that have no session yet */
+  private measurer?: Promise<LanguageModel>
 
   constructor(private summarise?: Summarise) {}
 
@@ -147,6 +164,19 @@ export class SessionCache {
     const e = this.entries.get(conversationId)
     if (!e) return undefined
     return { usage: e.session.contextUsage, window: e.session.contextWindow, compacted: e.offset }
+  }
+
+  /** Token cost of a draft message, measured by the model's own tokenizer. */
+  async measure(conversationId: string, text: string): Promise<DraftMeasure> {
+    const e = this.entries.get(conversationId)
+    let session = e?.session
+    if (!session) {
+      this.measurer ??= LanguageModel.create(baseModelOptions() as LanguageModelCreateOptions)
+      this.measurer.catch(() => (this.measurer = undefined))
+      session = await this.measurer
+    }
+    const tokens = await session.measureContextUsage([{ role: 'user', content: text }])
+    return { tokens, window: session.contextWindow, usage: e ? session.contextUsage : 0 }
   }
 
   drop(conversationId: string) {
@@ -162,8 +192,23 @@ export class SessionCache {
     for (const id of [...this.entries.keys()]) this.drop(id)
   }
 
+  /**
+   * Build the session for an existing chat ahead of the next message, so its
+   * context usage is known on open and the first reply doesn't pay the rebuild.
+   */
+  async warm(conversationId: string, all: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
+    const messages = modelVisible(all)
+    if (!messages.length || this.entries.has(conversationId)) return this.stats(conversationId)
+    // rebuild() feeds messages[0..n-2]; pass a placeholder tail so every real message is included
+    const withTail = [...messages, { role: 'user', content: '' } as ModelMessage]
+    const keys = withTail.map((_, i) => messageKey(withTail, i))
+    await this.rebuild(conversationId, withTail, keys, config, JSON.stringify(config), 0, undefined, signal)
+    return this.stats(conversationId)
+  }
+
   /** Make the session hold messages[0..n-2]; return the last message converted for prompting. */
-  async prepare(conversationId: string, messages: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
+  async prepare(conversationId: string, all: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
+    const messages = modelVisible(all)
     if (!messages.length) throw new Error('No messages to send')
     const n = messages.length
     const keys = messages.map((_, i) => messageKey(messages, i))
@@ -257,6 +302,13 @@ export class SessionCache {
     }
     this.entries.set(conversationId, entry)
     return entry
+  }
+
+  /** The model rejected a turn as too long: summarise older turns now so the retry fits. */
+  async compactNow(conversationId: string, all: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
+    const messages = modelVisible(all)
+    const keys = messages.map((_, i) => messageKey(messages, i))
+    await this.compact(conversationId, messages, keys, config, JSON.stringify(config), signal)
   }
 
   private async compact(

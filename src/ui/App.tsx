@@ -167,6 +167,7 @@ export function App({ platform }: { platform: Platform }) {
                 settings={settings}
                 incomingPage={incomingPage}
                 onStats={setStats}
+                onNewChat={newChat}
                 inputRef={inputRef}
               />
             ) : (

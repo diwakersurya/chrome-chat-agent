@@ -1,6 +1,7 @@
 import * as stylex from '@stylexjs/stylex'
 import type { Availability } from '../../core/ai/capabilities'
 import type { ContextStats } from '../../core/ai/sessionCache'
+import { contextBudget } from '../contextBudget'
 import { color, font, motion, radius, size, space } from '../tokens.stylex'
 import { Button } from './Button'
 
@@ -22,24 +23,36 @@ const STATUS: Record<Availability, string> = {
 }
 
 export function Header({ title, model, progress, stats, showMenu, onMenu, onSettings }: Props) {
-  const pct = stats && stats.window ? Math.min(100, Math.round((stats.usage / stats.window) * 100)) : 0
+  const budget = stats && contextBudget(stats)
   const statusText =
     model === 'downloading' && progress != null ? `${STATUS.downloading} ${Math.round(progress * 100)}%` : STATUS[model]
   return (
     <header {...stylex.props(styles.header)}>
       {showMenu && <Button icon="menu" label="Show chats" onClick={onMenu} />}
       <h1 {...stylex.props(styles.title)}>{title}</h1>
-      {stats && (
+      {stats && budget && (
         <span
           role="meter"
-          aria-label="Context used"
-          aria-valuenow={pct}
+          aria-label="Model memory used by this chat"
+          aria-valuenow={stats.usage}
           aria-valuemin={0}
-          aria-valuemax={100}
-          title={`Model memory ${pct}% used (${stats.usage.toLocaleString()} of ${stats.window.toLocaleString()} tokens)`}
-          {...stylex.props(styles.meter)}
+          aria-valuemax={stats.window}
+          aria-valuetext={`${budget.left.toLocaleString()} of ${stats.window.toLocaleString()} tokens left`}
+          title={`Using ${stats.usage.toLocaleString()} of ${stats.window.toLocaleString()} tokens (${budget.pct}%). ${budget.left.toLocaleString()} left in this chat.${stats.compacted ? ' Earlier messages have been summarized.' : ''}`}
+          {...stylex.props(styles.budget)}
         >
-          <span {...stylex.props(styles.meterFill(pct), pct > 80 && styles.meterHot)} />
+          <span {...stylex.props(styles.meter)}>
+            <span
+              {...stylex.props(
+                styles.meterFill(budget.pct),
+                budget.level === 'filling' && styles.meterFilling,
+                budget.level === 'full' && styles.meterFull,
+              )}
+            />
+          </span>
+          <span {...stylex.props(styles.budgetText, budget.level === 'full' && styles.budgetTextFull)}>
+            {budget.left.toLocaleString()} of {stats.window.toLocaleString()} tokens left
+          </span>
         </span>
       )}
       <span role="img" aria-label={statusText} title={statusText} {...stylex.props(styles.chip)}>
@@ -77,6 +90,15 @@ const styles = stylex.create({
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
+  budget: { display: 'inline-flex', alignItems: 'center', gap: space.sm, cursor: 'default' },
+  budgetText: {
+    fontSize: font.xs,
+    fontVariantNumeric: 'tabular-nums',
+    color: color.muted,
+    whiteSpace: 'nowrap',
+    display: { default: 'inline', '@media (max-width: 420px)': 'none' },
+  },
+  budgetTextFull: { color: color.warn, fontWeight: 600 },
   meter: {
     position: 'relative',
     width: '44px',
@@ -94,7 +116,8 @@ const styles = stylex.create({
     transitionProperty: 'width',
     transitionDuration: motion.slow,
   }),
-  meterHot: { backgroundColor: color.warn },
+  meterFilling: { backgroundColor: color.warn },
+  meterFull: { backgroundColor: color.danger },
   chip: {
     display: 'inline-flex',
     alignItems: 'center',
