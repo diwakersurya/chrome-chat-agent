@@ -1,4 +1,4 @@
-import type { PageContext, PageTool, Platform } from './platform'
+import type { PageContext, PageTool, PageTools, Platform } from './platform'
 
 export const PENDING_KEY = 'pendingSelection'
 
@@ -26,14 +26,14 @@ async function activeTab() {
 }
 
 // WebMCP tools live in the page's own JS world, so these run with world: 'MAIN'.
-async function getPageTools() {
+async function getPageTools(): Promise<PageTools> {
   const tab = await activeTab()
-  if (!tab) return { origin: '', tools: [] }
+  if (!tab) return { tabId: -1, origin: '', tools: [] }
   const [res] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: 'MAIN',
     func: async () => {
-      const mc = (document as unknown as { modelContext?: { getTools?: () => Promise<any[]> } }).modelContext
+      const mc = document.modelContext
       if (!mc?.getTools) return []
       const tools = await mc.getTools()
       return tools.map((t) => ({
@@ -44,20 +44,23 @@ async function getPageTools() {
       }))
     },
   })
-  return { origin: new URL(tab.url!).origin, tools: (res?.result ?? []) as PageTool[] }
+  return { tabId: tab.id, origin: new URL(tab.url!).origin, tools: (res?.result ?? []) as PageTool[] }
 }
 
-async function callPageTool(name: string, input: unknown) {
-  const tab = await activeTab()
-  if (!tab) throw new Error('No readable tab is active.')
+async function callPageTool(target: { tabId: number; origin: string }, name: string, input: unknown) {
+  // the tool belongs to the page it was listed on; refuse if that tab has moved elsewhere
+  const tab = await chrome.tabs.get(target.tabId).catch(() => undefined)
+  const origin = tab?.url && /^https?:|^file:/.test(tab.url) ? new URL(tab.url).origin : undefined
+  if (origin !== target.origin) throw new Error(`The page that offered “${name}” (${target.origin}) is no longer open in that tab.`)
   const [res] = await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
+    target: { tabId: target.tabId },
     world: 'MAIN',
     args: [name, input as never],
     func: async (toolName: string, args: unknown) => {
       try {
-        const mc = (document as any).modelContext
-        const tool = (await mc.getTools()).find((t: { name: string }) => t.name === toolName)
+        const mc = document.modelContext
+        if (!mc?.getTools || !mc.executeTool) return { ok: false, error: 'This page no longer offers WebMCP tools.' }
+        const tool = (await mc.getTools()).find((t) => t.name === toolName)
         if (!tool) return { ok: false, error: `This page no longer offers the tool “${toolName}”.` }
         return { ok: true, value: await mc.executeTool(tool, args) }
       } catch (e) {

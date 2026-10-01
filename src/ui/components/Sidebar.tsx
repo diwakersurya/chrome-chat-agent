@@ -34,13 +34,20 @@ function groupByDate(rows: ConversationRow[]) {
 export function Sidebar({ activeId, onSelect, onNew, onDelete, searchRef }: Props) {
   const [query, setQuery] = useState('')
   const q = useDeferredValue(query.trim())
-  const { data: rows = [] } = useDbQuery(() => db.listConversations(), [], ['conversations'])
-  const { data: hits } = useDbQuery(() => (q ? db.search(q) : Promise.resolve(undefined)), [q], ['messages', 'conversations'])
+  const { data: rows } = useDbQuery(() => db.listConversations(), [], ['conversations'])
+  const { data: found } = useDbQuery(
+    () => (q ? db.search(q).then((hits) => ({ q, hits })) : Promise.resolve(undefined)),
+    [q],
+    ['messages', 'conversations'],
+  )
+  // only show results for the current query; anything else is still searching
+  const searching = !!query.trim() && found?.q !== query.trim()
+  const hits = query.trim() && !searching ? found?.hits : undefined
 
   return (
     <nav aria-label="Conversations" {...stylex.props(styles.nav)}>
       <div {...stylex.props(styles.top)}>
-        <Button icon="plus" variant="quiet" onClick={onNew} xstyle={styles.newBtn}>
+        <Button icon="plus" variant="quiet" title="New chat (⌘⇧O)" onClick={onNew} xstyle={styles.newBtn}>
           New chat
         </Button>
         <label {...stylex.props(styles.search)}>
@@ -51,14 +58,24 @@ export function Sidebar({ activeId, onSelect, onNew, onDelete, searchRef }: Prop
             placeholder="Search chats"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            aria-label="Search chats"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape' && query) {
+                e.stopPropagation()
+                setQuery('')
+              }
+            }}
+            aria-label="Search chats (⌘K)"
             {...stylex.props(styles.searchInput)}
           />
         </label>
       </div>
 
-      <div {...stylex.props(styles.list)}>
-        {hits ? (
+      <div {...stylex.props(styles.list)} aria-busy={!rows || searching}>
+        {searching ? (
+          <p role="status" {...stylex.props(styles.empty)}>
+            Searching…
+          </p>
+        ) : hits ? (
           hits.length ? (
             <ul {...stylex.props(styles.ul)}>
               {hits.map((h) => (
@@ -73,6 +90,8 @@ export function Sidebar({ activeId, onSelect, onNew, onDelete, searchRef }: Prop
           ) : (
             <p {...stylex.props(styles.empty)}>No chats match “{q}”.</p>
           )
+        ) : !rows ? (
+          <RowSkeletons />
         ) : rows.length ? (
           groupByDate(rows).map(([label, list]) => (
             <section key={label} aria-label={label}>
@@ -95,6 +114,19 @@ export function Sidebar({ activeId, onSelect, onNew, onDelete, searchRef }: Prop
         )}
       </div>
     </nav>
+  )
+}
+
+/** Placeholder rows sized like real ones, so the list doesn't jump when chats load. */
+function RowSkeletons() {
+  return (
+    <ul aria-hidden {...stylex.props(styles.ul)}>
+      {[72, 54, 64, 40].map((w) => (
+        <li key={w} {...stylex.props(styles.skeletonRow)}>
+          <span {...stylex.props(styles.bone, styles.boneW(w))} />
+        </li>
+      ))}
+    </ul>
   )
 }
 
@@ -121,6 +153,8 @@ function ConversationItem({
 }) {
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState(c.title)
+  // actions show on row hover/focus and always on the active row and on touch screens
+  const [hot, setHot] = useState(false)
 
   const commit = () => {
     setEditing(false)
@@ -130,7 +164,13 @@ function ConversationItem({
   }
 
   return (
-    <li {...stylex.props(styles.item, active && styles.itemActive)}>
+    <li
+      onMouseEnter={() => setHot(true)}
+      onMouseLeave={() => setHot(false)}
+      onFocus={() => setHot(true)}
+      onBlur={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setHot(false)}
+      {...stylex.props(styles.item, active && styles.itemActive)}
+    >
       {editing ? (
         <input
           autoFocus
@@ -150,13 +190,14 @@ function ConversationItem({
           aria-current={active ? 'page' : undefined}
           onClick={onSelect}
           onDoubleClick={() => setEditing(true)}
+          title={c.title}
           {...stylex.props(styles.itemBtn)}
         >
           <span {...stylex.props(styles.title)}>{c.title}</span>
         </button>
       )}
       {!editing && (
-        <div {...stylex.props(styles.itemActions)}>
+        <div {...stylex.props(styles.itemActions, (hot || active) && styles.itemActionsOn)}>
           <Button icon="edit" label="Rename" onClick={() => setEditing(true)} />
           <Button icon="trash" label="Delete" onClick={onDelete} />
         </div>
@@ -164,6 +205,8 @@ function ConversationItem({
     </li>
   )
 }
+
+const shimmer = stylex.keyframes({ '0%': { opacity: 0.35 }, '50%': { opacity: 0.8 }, '100%': { opacity: 0.35 } })
 
 const styles = stylex.create({
   nav: {
@@ -234,10 +277,22 @@ const styles = stylex.create({
   title: { display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
   itemActions: {
     display: 'flex',
-    opacity: { default: 0, ':hover': 1, ':focus-within': 1 },
+    opacity: { default: 0, '@media (hover: none)': 1 },
     transitionProperty: 'opacity',
     transitionDuration: motion.fast,
   },
+  itemActionsOn: { opacity: 1 },
+  skeletonRow: { display: 'flex', alignItems: 'center', height: size.control, paddingInline: space.sm, marginBlock: space.xxs },
+  bone: {
+    display: 'block',
+    height: '0.9em',
+    borderRadius: radius.sm,
+    backgroundColor: color.sunken,
+    animationName: shimmer,
+    animationDuration: motion.loop,
+    animationIterationCount: 'infinite',
+  },
+  boneW: (pct: number) => ({ width: `${pct}%` }),
   rename: {
     flex: 1,
     minWidth: 0,

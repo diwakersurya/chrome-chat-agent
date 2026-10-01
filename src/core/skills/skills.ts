@@ -22,8 +22,8 @@ function parseFrontmatter(src: string): Record<string, string> {
   for (let i = 0; i < lines.length; i++) {
     const m = /^([A-Za-z_][\w-]*):\s*(.*)$/.exec(lines[i]!)
     if (!m) continue
-    const [, key, raw] = m as unknown as [string, string, string]
-    let value = raw.trim()
+    const key = m[1]!
+    let value = m[2]!.trim()
     if (value === '>' || value === '|' || value === '>-' || value === '|-') {
       const block: string[] = []
       while (i + 1 < lines.length && (/^\s+\S/.test(lines[i + 1]!) || lines[i + 1] === '')) block.push(lines[++i]!.trim())

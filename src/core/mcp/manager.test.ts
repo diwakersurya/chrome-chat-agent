@@ -131,3 +131,26 @@ it('does not reconnect a failing server until refreshed', async () => {
   await m.refresh(row)
   expect(attempts).toBe(2)
 })
+
+it('shares one connection attempt and ignores a stale one after refresh', async () => {
+  let attempts = 0
+  let releaseFirst: () => void = () => {}
+  const m = new McpManager('ext', async (s) => {
+    attempts++
+    if (attempts === 1) await new Promise<void>((r) => (releaseFirst = r))
+    return connect(s)
+  })
+  const a = m.ensure(row)
+  const b = m.ensure(row)
+  expect(a).toBe(b) // concurrent callers share the in-flight attempt
+  const fresh = m.refresh(row) // user pressed Test while the first is still connecting
+  releaseFirst()
+  await a
+  const s = await fresh
+  expect(s.state).toBe('ready')
+  expect(m.status(row.id).state).toBe('ready')
+  expect(attempts).toBe(2)
+  // the new client is kept: no reconnect needed
+  await m.ensure(row)
+  expect(attempts).toBe(2)
+})

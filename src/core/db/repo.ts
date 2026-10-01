@@ -133,6 +133,8 @@ export function messageText(parts: unknown[]): string {
     .map((p: any) => (p?.type === 'text' ? p.content : p?.type === 'tool-call' ? `[${p.name}]` : ''))
     .filter(Boolean)
     .join('\n')
+    // skill instructions aren't what the user said; page context keeps its body
+    .replace(/<skill [^>]*>[\s\S]*?<\/skill>/g, ' ')
     .replace(/<page [^>]*>|<\/page>/g, ' ')
     .replace(/```\w*|[|*_`#>~-]+/g, ' ')
     .replace(/\s+/g, ' ')
@@ -233,6 +235,46 @@ export function deleteConversation(db: Db, id: string): Table[] {
 /** Replace a conversation's messages wholesale. Handles edits/regenerate truncation for free. */
 export function saveMessages(db: Db, conversationId: string, messages: StoredMessage[], now = Date.now()): Table[] {
   db.transaction((tx) => writeMessages(tx, conversationId, messages, now))
+  return ['conversations', 'messages']
+}
+
+/**
+ * Incremental save: upsert only the messages that changed and delete rows no
+ * longer in the conversation (edit/regenerate truncation). `order` is the full
+ * list of message ids in display order.
+ */
+export function syncMessages(
+  db: Db,
+  conversationId: string,
+  changed: StoredMessage[],
+  order: string[],
+  now = Date.now(),
+): Table[] {
+  db.transaction((tx) => {
+    tx.exec('DELETE FROM messages WHERE conversation_id = ? AND id NOT IN (SELECT value FROM json_each(?))', {
+      bind: [conversationId, JSON.stringify(order)],
+    })
+    for (const m of changed) {
+      tx.exec(
+        `INSERT INTO messages (id, conversation_id, seq, role, parts, metadata, text, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET seq = excluded.seq, role = excluded.role, parts = excluded.parts,
+           metadata = excluded.metadata, text = excluded.text`,
+        {
+          bind: [
+            m.id,
+            conversationId,
+            order.indexOf(m.id),
+            m.role,
+            JSON.stringify(m.parts),
+            m.metadata ? JSON.stringify(m.metadata) : null,
+            messageText(m.parts),
+            m.createdAt,
+          ],
+        },
+      )
+    }
+    tx.exec('UPDATE conversations SET updated_at = ? WHERE id = ?', { bind: [now, conversationId] })
+  })
   return ['conversations', 'messages']
 }
 

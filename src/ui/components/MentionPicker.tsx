@@ -1,5 +1,5 @@
 import * as stylex from '@stylexjs/stylex'
-import { color, font, radius, space } from '../tokens.stylex'
+import { color, font, radius, shadow, size, space } from '../tokens.stylex'
 import { Icon, type IconName } from './Icon'
 
 export interface MentionItem {
@@ -60,7 +60,7 @@ const styles = stylex.create({
     insetInline: 0,
     bottom: `calc(100% + ${space.sm})`,
     zIndex: 25,
-    maxHeight: '280px',
+    maxHeight: size.popover,
     overflowY: 'auto',
     padding: space.xs,
     borderRadius: radius.md,
@@ -68,7 +68,7 @@ const styles = stylex.create({
     borderStyle: 'solid',
     borderColor: color.line,
     backgroundColor: color.surface,
-    boxShadow: '0 10px 30px rgba(15, 25, 40, 0.18)',
+    boxShadow: shadow.popover,
     fontFamily: font.ui,
   },
   title: { margin: 0, paddingInline: space.sm, paddingBlock: space.xs, fontSize: font.xs, color: color.muted },

@@ -1,10 +1,11 @@
 import * as stylex from '@stylexjs/stylex'
-import { useSyncExternalStore } from 'react'
+import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { decide, pendingApprovals, subscribeApprovals } from '../../core/mcp/approval'
 import type { SourceChip } from '../useToolSources'
 import { color, font, radius, size, space } from '../tokens.stylex'
 import { Button } from './Button'
 import { Icon } from './Icon'
+import { StatusDot } from './StatusDot'
 
 /** Tool sources active in this chat, plus budget warnings. */
 export function SourceChips({
@@ -24,7 +25,7 @@ export function SourceChips({
       <span {...stylex.props(styles.label)}>Tools in this chat</span>
       {chips.map((c) => (
         <span key={c.id} title={c.detail} {...stylex.props(styles.chip)}>
-          <span {...stylex.props(styles.dot, styles[c.status])} aria-hidden />
+          <StatusDot state={c.status} />
           <span>{c.label}</span>
           <span {...stylex.props(styles.detail)}>{c.status === 'error' ? 'unavailable' : c.detail}</span>
           <Button icon="x" label={`Remove ${c.label} from this chat`} onClick={() => onRemove(c.id)} xstyle={styles.x} />
@@ -58,25 +59,39 @@ const subscribe = (fn: () => void) =>
 /** Pending tool calls that need the user's OK before they run. */
 export function ApprovalCards() {
   const pending = useSyncExternalStore(subscribe, getSnapshot)
+  const allowRef = useRef<HTMLButtonElement>(null)
+  const first = pending[0]?.id
+  // the reply is waiting on the user: move focus to the decision
+  useEffect(() => {
+    if (!first) return
+    allowRef.current?.focus()
+    allowRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [first])
   if (!pending.length) return null
   return (
     <div {...stylex.props(styles.cards)}>
-      {pending.map((p) => (
-        <div key={p.id} role="alertdialog" aria-label={`Allow ${p.tool}?`} {...stylex.props(styles.card)}>
+      {pending.map((p, i) => (
+        <div
+          key={p.id}
+          role="alertdialog"
+          aria-label={`Allow ${p.tool} from ${p.source}?`}
+          onKeyDown={(e) => e.key === 'Escape' && (e.stopPropagation(), decide(p.id, 'deny'))}
+          {...stylex.props(styles.card)}
+        >
           <p {...stylex.props(styles.cardTitle)}>
             <Icon name="plug" /> Allow <strong>{p.tool}</strong> from {p.source}?
           </p>
           <p {...stylex.props(styles.cardHint)}>This tool isn’t marked read-only, so it may change something outside this app.</p>
           <pre {...stylex.props(styles.args)}>{JSON.stringify(p.args, null, 2)}</pre>
           <div {...stylex.props(styles.actions)}>
-            <Button variant="primary" onClick={() => decide(p.id, 'once')}>
+            <Button ref={i === 0 ? allowRef : undefined} variant="primary" onClick={() => decide(p.id, 'once')}>
               Allow once
             </Button>
             <Button variant="quiet" onClick={() => decide(p.id, 'always')}>
               Always allow this tool
             </Button>
             <Button variant="danger" onClick={() => decide(p.id, 'deny')}>
-              Deny
+              Deny (Esc)
             </Button>
           </div>
         </div>
@@ -111,10 +126,6 @@ const styles = stylex.create({
   },
   detail: { color: color.muted },
   x: { borderRadius: radius.pill },
-  dot: { width: '8px', height: '8px', borderRadius: radius.pill },
-  ready: { backgroundColor: color.signal },
-  connecting: { backgroundColor: color.warn },
-  error: { backgroundColor: color.danger },
   warn: { display: 'inline-flex', alignItems: 'center', gap: space.xs, color: color.warn },
   cards: { display: 'flex', flexDirection: 'column', gap: space.sm, marginBottom: space.sm },
   card: {
@@ -137,7 +148,7 @@ const styles = stylex.create({
     backgroundColor: color.sunken,
     fontFamily: font.mono,
     fontSize: font.xs,
-    maxHeight: '160px',
+    maxHeight: size.notice,
     overflow: 'auto',
     whiteSpace: 'pre-wrap',
   },

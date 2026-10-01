@@ -2,7 +2,7 @@ import { convertSchemaToJsonSchema } from '@tanstack/ai'
 import { BaseTextAdapter } from '@tanstack/ai/adapters'
 import type { StructuredOutputOptions, StructuredOutputResult } from '@tanstack/ai/adapters'
 import type { AdapterYieldChunk, ModelMessage, TextOptions } from '@tanstack/ai'
-import { SessionCache, type SessionConfig } from './sessionCache'
+import { SessionCache, toolCallText, type SessionConfig } from './sessionCache'
 import { baseModelOptions } from './capabilities'
 
 export interface ChromeModelOptions extends SessionConfig {
@@ -12,13 +12,10 @@ export interface ChromeModelOptions extends SessionConfig {
 
 export const MAX_TOOL_STEPS = 3
 
-type AnyToolLike = { name: string; description?: string; inputSchema?: unknown }
+type AnyToolLike = { name: string; description?: string; inputSchema?: Parameters<typeof convertSchemaToJsonSchema>[0] }
 
 type Decision = { action: 'answer' } | { action: 'tool'; tool: string; args: Record<string, unknown> }
 
-/** Serialised assistant turn used when the router picked a tool. Must be deterministic:
- *  the session cache compares it against TanStack's stored assistant tool-call message. */
-export const toolCallText = (tool: string, args: unknown) => JSON.stringify({ action: 'tool', tool, args })
 
 export function routerSchema(toolNames: string[]) {
   return {
@@ -36,7 +33,7 @@ export function routerSchema(toolNames: string[]) {
 export function routerPrompt(tools: AnyToolLike[]) {
   const list = tools
     .map((t) => {
-      const schema = t.inputSchema ? JSON.stringify(convertSchemaToJsonSchema(t.inputSchema as never)) : '{}'
+      const schema = t.inputSchema ? JSON.stringify(convertSchemaToJsonSchema(t.inputSchema)) : '{}'
       return `- ${t.name}: ${t.description ?? ''}\n  args JSON schema: ${schema}`
     })
     .join('\n')
@@ -67,7 +64,8 @@ export const isConstraintUnsupported = (err: unknown) =>
 
 export function parseDecision(raw: string, toolNames: string[]): Decision {
   try {
-    const d = extractJson(raw) as any
+    // the model's JSON is untyped; every field is checked below
+    const d = extractJson(raw) as Record<string, any>
     if (!d || typeof d !== 'object') return { action: 'answer' }
     // small models vary the shape: {"action":"tool","tool":X}, {"action":X}, {"tool":X},
     // {"name":X,"arguments":{…}} (OpenAI style) or {"tool_name":X,"parameters":{…}}
@@ -167,58 +165,56 @@ export class ChromeTextAdapter extends BaseTextAdapter<
     ev: (type: string, extra?: Record<string, unknown>) => AdapterYieldChunk,
     signal?: AbortSignal,
   ): AsyncGenerator<AdapterYieldChunk> {
-    {
-      const { session, last } = await this.sessions.prepare(opts.conversationId, options.messages, opts, signal)
+    const { session, last } = await this.sessions.prepare(opts.conversationId, options.messages, opts, signal)
 
-      const tools = (options.tools ?? []) as AnyToolLike[]
-      const canRoute =
-        opts.toolsEnabled !== false && tools.length > 0 && toolStepsSinceUser(options.messages) < MAX_TOOL_STEPS
-      if (canRoute) {
-        const names = tools.map((t) => t.name)
-        const raw = await this.route(session, [last, { role: 'user', content: routerPrompt(tools) }], names, signal)
-        const decision = parseDecision(raw, names)
-        if (decision.action === 'tool') {
-          const argsJson = JSON.stringify(decision.args)
-          await this.sessions.commitToolCall(opts.conversationId, last, toolCallText(decision.tool, decision.args), signal)
-          const toolCallId = id()
-          const messageId = id()
-          yield ev('TOOL_CALL_START', {
-            toolCallId,
-            toolCallName: decision.tool,
-            toolName: decision.tool,
-            parentMessageId: messageId,
-            index: 0,
-          })
-          yield ev('TOOL_CALL_ARGS', { toolCallId, delta: argsJson, args: argsJson })
-          yield ev('TOOL_CALL_END', { toolCallId, toolName: decision.tool, input: decision.args })
-          yield ev('RUN_FINISHED', { runId, threadId, finishReason: 'tool_calls' })
-          return
-        }
+    const tools = (options.tools ?? []) as AnyToolLike[]
+    const canRoute =
+      opts.toolsEnabled !== false && tools.length > 0 && toolStepsSinceUser(options.messages) < MAX_TOOL_STEPS
+    if (canRoute) {
+      const names = tools.map((t) => t.name)
+      const raw = await this.route(session, [last, { role: 'user', content: routerPrompt(tools) }], names, signal)
+      const decision = parseDecision(raw, names)
+      if (decision.action === 'tool') {
+        const argsJson = JSON.stringify(decision.args)
+        await this.sessions.commitToolCall(opts.conversationId, last, toolCallText(decision.tool, decision.args), signal)
+        const toolCallId = id()
+        const messageId = id()
+        yield ev('TOOL_CALL_START', {
+          toolCallId,
+          toolCallName: decision.tool,
+          toolName: decision.tool,
+          parentMessageId: messageId,
+          index: 0,
+        })
+        yield ev('TOOL_CALL_ARGS', { toolCallId, delta: argsJson, args: argsJson })
+        yield ev('TOOL_CALL_END', { toolCallId, toolName: decision.tool, input: decision.args })
+        yield ev('RUN_FINISHED', { runId, threadId, finishReason: 'tool_calls' })
+        return
       }
-
-      const messageId = id()
-      let full = ''
-      let rejected = false
-      try {
-        const stream = session.promptStreaming([last], { signal })
-        for await (const delta of stream as unknown as AsyncIterable<string>) {
-          // start the message lazily so a rejected prompt can still be retried cleanly
-          if (!full) yield ev('TEXT_MESSAGE_START', { messageId, role: 'assistant' })
-          full += delta
-          yield ev('TEXT_MESSAGE_CONTENT', { messageId, delta, content: full })
-        }
-        if (!full && !signal?.aborted) throw new EmptyReplyError()
-      } catch (err) {
-        rejected = !full && !signal?.aborted
-        throw err
-      } finally {
-        // Record what the session actually saw, even for partial (stopped) replies.
-        if (!rejected) this.sessions.commitAnswer(opts.conversationId, last, full)
-      }
-      if (!full) yield ev('TEXT_MESSAGE_START', { messageId, role: 'assistant' })
-      yield ev('TEXT_MESSAGE_END', { messageId })
-      yield ev('RUN_FINISHED', { runId, threadId, finishReason: 'stop' })
     }
+
+    const messageId = id()
+    let full = ''
+    let rejected = false
+    try {
+      const stream = session.promptStreaming([last], { signal })
+      for await (const delta of stream as unknown as AsyncIterable<string>) {
+        // start the message lazily so a rejected prompt can still be retried cleanly
+        if (!full) yield ev('TEXT_MESSAGE_START', { messageId, role: 'assistant' })
+        full += delta
+        yield ev('TEXT_MESSAGE_CONTENT', { messageId, delta, content: full })
+      }
+      if (!full && !signal?.aborted) throw new EmptyReplyError()
+    } catch (err) {
+      rejected = !full && !signal?.aborted
+      throw err
+    } finally {
+      // Record what the session actually saw, even for partial (stopped) replies.
+      if (!rejected) this.sessions.commitAnswer(opts.conversationId, full)
+    }
+    if (!full) yield ev('TEXT_MESSAGE_START', { messageId, role: 'assistant' })
+    yield ev('TEXT_MESSAGE_END', { messageId })
+    yield ev('RUN_FINISHED', { runId, threadId, finishReason: 'stop' })
   }
 
   /** Router decision on a throwaway clone; schema-constrained when the model supports it. */
@@ -284,4 +280,3 @@ export function errorMessage(err: unknown) {
   return err instanceof Error ? err.message : String(err)
 }
 
-export const chromeText = () => new ChromeTextAdapter()

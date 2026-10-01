@@ -39,6 +39,7 @@ const WRITES = new Set([
   'renameConversation',
   'deleteConversation',
   'saveMessages',
+  'syncMessages',
   'setSetting',
   'importAll',
   'clearAll',

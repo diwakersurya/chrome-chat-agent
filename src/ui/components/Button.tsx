@@ -1,5 +1,5 @@
 import * as stylex from '@stylexjs/stylex'
-import type { ButtonHTMLAttributes } from 'react'
+import type { ButtonHTMLAttributes, Ref } from 'react'
 import { color, font, motion, radius, size, space } from '../tokens.stylex'
 import { Icon, type IconName } from './Icon'
 
@@ -9,6 +9,7 @@ type Props = ButtonHTMLAttributes<HTMLButtonElement> & {
   label?: string
   variant?: 'ghost' | 'primary' | 'quiet' | 'danger'
   xstyle?: stylex.StyleXStyles
+  ref?: Ref<HTMLButtonElement>
 }
 
 export function Button({ icon, label, variant = 'ghost', xstyle, children, ...rest }: Props) {
@@ -33,7 +34,7 @@ const styles = stylex.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: space.sm,
-    height: size.control,
+    height: { default: size.control, '@media (pointer: coarse)': size.tap },
     paddingInline: space.md,
     borderRadius: radius.md,
     borderWidth: 1,
@@ -48,7 +49,7 @@ const styles = stylex.create({
     transitionDuration: motion.fast,
     whiteSpace: 'nowrap',
   },
-  iconOnly: { width: size.control, paddingInline: 0 },
+  iconOnly: { width: { default: size.control, '@media (pointer: coarse)': size.tap }, paddingInline: 0 },
   ghost: {
     backgroundColor: { default: 'transparent', ':hover:not(:disabled)': color.sunken },
     color: { default: color.muted, ':hover:not(:disabled)': color.ink },

@@ -11,6 +11,7 @@ export interface FakeLog {
   created: { initialPrompts: unknown[] }[]
   appended: unknown[][]
   prompted: unknown[][]
+  destroyed: number
 }
 
 export interface FakeOptions {
@@ -19,7 +20,7 @@ export interface FakeOptions {
 }
 
 export function installFakeLanguageModel(script: FakeScript, window = 4096, opts: FakeOptions = {}) {
-  const log: FakeLog = { created: [], appended: [], prompted: [] }
+  const log: FakeLog = { created: [], appended: [], prompted: [], destroyed: 0 }
 
   class FakeSession {
     contextUsage = 0
@@ -59,13 +60,16 @@ export function installFakeLanguageModel(script: FakeScript, window = 4096, opts
     async clone() {
       return new FakeSession([...this.history])
     }
-    destroy() {}
+    destroy() {
+      log.destroyed++
+    }
   }
 
   ;(globalThis as any).LanguageModel = {
     availability: async (o: { samplingMode?: string } = {}) =>
       opts.mtp && o.samplingMode !== 'most-predictable' ? 'unavailable' : 'available',
     create: async (o: { initialPrompts?: unknown[]; samplingMode?: string } = {}) => {
+      await new Promise((r) => setTimeout(r, 1)) // real create() is async
       if (opts.mtp && o.samplingMode !== 'most-predictable') {
         throw new DOMException('The sampling options are incompatible with speculative decoding (MTP).', 'NotSupportedError')
       }

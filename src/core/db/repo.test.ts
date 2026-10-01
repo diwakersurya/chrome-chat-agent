@@ -97,3 +97,24 @@ describe('skills and MCP servers', () => {
     expect(repo.listMcpServers(db)).toEqual([])
   })
 })
+
+describe('syncMessages', () => {
+  it('upserts changed rows, drops removed ones and keeps search in sync', () => {
+    repo.createConversation(db, 'c1', 'One', 10)
+    repo.syncMessages(db, 'c1', [msg('m1', 'alpha'), msg('m2', 'bravo', 'assistant')], ['m1', 'm2'], 20)
+    expect(repo.getMessages(db, 'c1').map((m) => m.id)).toEqual(['m1', 'm2'])
+    // edit m1, truncate m2, append m3
+    repo.syncMessages(db, 'c1', [msg('m1', 'alpha edited'), msg('m3', 'charlie', 'assistant')], ['m1', 'm3'], 30)
+    expect(repo.getMessages(db, 'c1').map((m) => [m.id, (m.parts[0] as any).content])).toEqual([
+      ['m1', 'alpha edited'],
+      ['m3', 'charlie'],
+    ])
+    expect(repo.search(db, 'bravo')).toEqual([])
+    expect(repo.search(db, 'edited').map((h) => h.conversationId)).toEqual(['c1'])
+    expect(repo.listConversations(db)[0]!.updatedAt).toBe(30)
+  })
+
+  it('keeps skill instructions out of the search index', () => {
+    expect(repo.messageText([{ type: 'text', content: '<skill name="x">\nsecret steps\n</skill>' }, { type: 'text', content: 'hi' }])).toBe('hi')
+  })
+})

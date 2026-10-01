@@ -1,36 +1,10 @@
 import * as stylex from '@stylexjs/stylex'
 import { useId } from 'react'
-import { color, font, radius, size, space } from '../tokens.stylex'
+import { color, font, radius, shadow, size, space } from '../tokens.stylex'
 import { Icon } from './Icon'
+import { TASK_LABELS, type TaskId } from '../tasks'
 
-export type TaskId =
-  | 'summarize'
-  | 'key-points'
-  | 'translate:en'
-  | 'translate:es'
-  | 'translate:fr'
-  | 'translate:de'
-  | 'translate:hi'
-  | 'translate:ja'
-  | 'rewrite:more-formal'
-  | 'rewrite:more-casual'
-  | 'rewrite:shorter'
-  | 'proofread'
-
-export const TASK_LABELS: Record<TaskId, string> = {
-  summarize: 'Summarize',
-  'key-points': 'Key points',
-  'translate:en': 'Translate to English',
-  'translate:es': 'Translate to Spanish',
-  'translate:fr': 'Translate to French',
-  'translate:de': 'Translate to German',
-  'translate:hi': 'Translate to Hindi',
-  'translate:ja': 'Translate to Japanese',
-  'rewrite:more-formal': 'Make more formal',
-  'rewrite:more-casual': 'Make more casual',
-  'rewrite:shorter': 'Make shorter',
-  proofread: 'Proofread',
-}
+export type { TaskId } from '../tasks'
 
 // Native popover API: no positioning library, light-dismiss for free.
 export function TaskMenu({ tasks, disabled, onPick }: { tasks: TaskId[]; disabled?: boolean; onPick: (t: TaskId) => void }) {
@@ -86,14 +60,14 @@ const styles = stylex.create({
   menu: {
     margin: 0,
     padding: space.xs,
-    minWidth: '200px',
+    minWidth: size.menu,
     borderWidth: 1,
     borderStyle: 'solid',
     borderColor: color.line,
     borderRadius: radius.md,
     backgroundColor: color.surface,
     color: color.ink,
-    boxShadow: '0 8px 28px rgba(15, 25, 40, 0.18)',
+    boxShadow: shadow.popover,
     top: 'anchor(bottom)',
     left: 'anchor(left)',
     positionTryFallbacks: 'flip-block, flip-inline',

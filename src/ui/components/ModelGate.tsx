@@ -2,6 +2,7 @@ import * as stylex from '@stylexjs/stylex'
 import type { Availability } from '../../core/ai/capabilities'
 import { color, font, radius, space } from '../tokens.stylex'
 import { Button } from './Button'
+import { Icon } from './Icon'
 
 interface Props {
   model: Availability
@@ -27,11 +28,16 @@ export function ModelGate({ model, progress, error, onDownload }: Props) {
           <span {...stylex.props(styles.muted)}>{pct == null ? 'Starting download…' : `${pct}% downloaded`}</span>
         </div>
       ) : (
-        <Button variant="primary" icon="download" onClick={onDownload}>
-          Download the model
+        <Button variant="primary" icon={error ? 'refresh' : 'download'} onClick={onDownload}>
+          {error ? 'Try the download again' : 'Download the model'}
         </Button>
       )}
-      {error && <p {...stylex.props(styles.error)}>{error}</p>}
+      {error && (
+        <p role="alert" {...stylex.props(styles.error)}>
+          <Icon name="alert" />
+          <span>The download didn’t finish: {error}</span>
+        </p>
+      )}
     </section>
   )
 }
@@ -88,5 +94,5 @@ const styles = stylex.create({
   progressWrap: { display: 'flex', flexDirection: 'column', gap: space.sm, width: '100%' },
   progress: { width: '100%', accentColor: color.accent },
   muted: { fontSize: font.sm, color: color.muted },
-  error: { margin: 0, fontSize: font.sm, color: color.danger },
+  error: { display: 'flex', gap: space.sm, margin: 0, fontSize: font.sm, color: color.danger, lineHeight: 1.45 },
 })

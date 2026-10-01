@@ -4,33 +4,42 @@ import type { StreamChunk } from '@tanstack/ai'
 import { stream, useChat, type UIMessage } from '@tanstack/ai-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Capabilities } from '../../core/ai/capabilities'
-import { usable } from '../../core/ai/capabilities'
 import { ChromeTextAdapter, MAX_TOOL_STEPS, routerPrompt, type ChromeModelOptions } from '../../core/ai/chromeAdapter'
 import type { ContextStats } from '../../core/ai/sessionCache'
 import { SessionCache } from '../../core/ai/sessionCache'
 import * as task from '../../core/ai/taskApis'
 import { db, useDbQuery } from '../../core/db/client'
-import type { StoredMessage } from '../../core/db/repo'
 import { buildTools } from '../../core/tools/registry'
 import { usePlatform, type PageContext } from '../../platform/platform'
+import {
+  availableTasks,
+  draftToContent,
+  isBlankAssistant,
+  messageText,
+  runTask,
+  taskLabel,
+  userContent,
+} from '../chatContent'
+import { friendlyError } from '../errors'
 import type { Settings } from '../state'
-import { contextBudget } from '../contextBudget'
-import { formatPageContext } from '../pageContext'
-import { formatSkillPart } from '../../core/skills/skills'
+import { useToast } from '../toast'
+import { color, font, radius, shadow, space, size, motion } from '../tokens.stylex'
+import { useConversationPersistence } from '../useConversationPersistence'
+import { useSessionWarmup } from '../useSessionWarmup'
 import { useToolSources } from '../useToolSources'
-import { ApprovalCards, SourceChips } from './ToolBar'
-import { color, font, radius, size, space } from '../tokens.stylex'
 import { Button } from './Button'
 import { Composer, type Draft } from './Composer'
+import { ContextNotices } from './ContextNotices'
 import { Icon } from './Icon'
-import { Message, messageText } from './Message'
-import { TASK_LABELS, type TaskId } from './TaskMenu'
+import { Message } from './Message'
+import type { TaskId } from './TaskMenu'
+import { ApprovalCards, SourceChips } from './ToolBar'
 
 // One adapter (and session cache) for the whole app. Compaction summaries use
-// the Summarizer API when present; otherwise old turns are dropped.
+// the Summarizer API when it works; otherwise the chat model, else old turns are dropped.
 export const adapter = new ChromeTextAdapter(new SessionCache((t) => task.summarize(t, 'key-points', 'long')))
 
-export const NEW_TITLE = 'New chat'
+export { NEW_TITLE } from '../chatContent'
 
 interface Props {
   conversationId: string
@@ -38,80 +47,27 @@ interface Props {
   exists: boolean
   caps: Capabilities
   settings: Settings
+  /** settings have loaded from the DB (the session shouldn't be built with defaults) */
+  settingsReady: boolean
   incomingPage?: PageContext
+  /** the composer took the incoming page; App can forget it */
+  onIncomingUsed: () => void
   onStats: (s: ContextStats | undefined) => void
   onNewChat: () => void
   inputRef: React.RefObject<HTMLTextAreaElement | null>
 }
 
-const toStored = (m: UIMessage): StoredMessage => ({
-  id: m.id,
-  role: m.role,
-  parts: m.parts,
-  ...(m.metadata ? { metadata: m.metadata } : {}),
-  createdAt: m.createdAt ? new Date(m.createdAt).getTime() : Date.now(),
-})
+/** What the model is doing right now, shown under the skeleton. */
+type Stage = { label: string } | undefined
 
-function availableTasks(caps: Capabilities): TaskId[] {
-  // every task falls back to the Prompt API, so a working model enables them all
-  const prompt = usable(caps.prompt)
-  const t: TaskId[] = []
-  if (prompt || usable(caps.summarizer)) t.push('summarize', 'key-points')
-  if (prompt || caps.translator)
-    t.push('translate:en', 'translate:es', 'translate:fr', 'translate:de', 'translate:hi', 'translate:ja')
-  if (prompt || usable(caps.rewriter)) t.push('rewrite:more-formal', 'rewrite:more-casual', 'rewrite:shorter')
-  if (prompt || usable(caps.proofreader)) t.push('proofread')
-  return t
-}
-
-async function runTask(id: TaskId, text: string) {
-  if (id === 'summarize') return task.summarize(text, 'tldr')
-  if (id === 'key-points') return task.summarize(text, 'key-points')
-  if (id === 'proofread') return task.proofread(text)
-  const [kind, arg] = id.split(':') as [string, string]
-  if (kind === 'translate') return task.translate(text, arg)
-  return task.rewrite(text, arg === 'shorter' ? 'as-is' : (arg as task.RewriteTone), arg === 'shorter' ? 'shorter' : 'as-is')
-}
-
-async function makeTitle(firstUserText: string) {
-  const fallback = firstUserText.split('\n')[0]!.slice(0, 48) || NEW_TITLE
-  try {
-    const t = await task.summarize(firstUserText.slice(0, 2000), 'headline', 'short')
-    return t.replace(/^[#*\s]+|[*.\s]+$/g, '').slice(0, 60) || fallback
-  } catch {
-    return fallback
-  }
-}
-
-function draftToContent(d: Draft) {
-  const parts: any[] = []
-  for (const sk of d.skills) parts.push({ type: 'text', content: formatSkillPart(sk) })
-  if (d.page) parts.push({ type: 'text', content: formatPageContext(d.page, d.page.body) })
-  for (const a of d.attachments) parts.push({ type: a.kind, source: { type: 'data', value: a.data, mimeType: a.mimeType } })
-  if (d.text) parts.push({ type: 'text', content: d.text })
-  return parts.length === 1 && parts[0].type === 'text' && !d.page && !d.skills.length ? d.text : parts
-}
-
-/** A user message's parts as sendable content (drops UI-only fields). */
-function userContent(m: UIMessage, replaceText?: string) {
-  const media = m.parts.filter((p: any) => p.type === 'image' || p.type === 'audio')
-  const pages = m.parts.filter(
-    (p: any) => p.type === 'text' && (p.content.startsWith('<page ') || p.content.startsWith('<skill ')),
-  )
-  const text = replaceText ?? messageText(m)
-  return [...pages, ...media, ...(text ? [{ type: 'text', content: text }] : [])] as any[]
-}
-
-export function ChatView({ conversationId, initialMessages, exists, caps, settings, incomingPage, onStats, onNewChat, inputRef }: Props) {
+export function ChatView(props: Props) {
+  const { conversationId, initialMessages, exists, caps, settings, settingsReady, onStats, onNewChat, inputRef } = props
   const platform = usePlatform()
-  const created = useRef(exists)
-  const titled = useRef(exists)
-  const saving = useRef(Promise.resolve())
+  const toast = useToast()
   const [taskBusy, setTaskBusy] = useState(false)
-  const [taskError, setTaskError] = useState<string>()
-  const [stats, setStats] = useState<ContextStats>()
-  /** the saved history can't be loaded into any session (e.g. one message is bigger than the window) */
-  const [overflow, setOverflow] = useState(false)
+  const [taskFailure, setTaskFailure] = useState<{ id: string; task: TaskId; message: string }>()
+  const [stage, setStage] = useState<Stage>()
+  const [announce, setAnnounce] = useState('')
 
   const sources = useToolSources()
   const { data: allSkills } = useDbQuery(() => db.listSkills(), [], ['skills'])
@@ -123,17 +79,6 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
   // external tools are chosen per chat with "@", so they apply even if built-ins are off
   const tools = useMemo(() => [...builtin, ...sources.tools], [builtin, sources.tools])
 
-  // how much model memory the router prompt for these tools costs
-  const [toolTokens, setToolTokens] = useState<number>()
-  useEffect(() => {
-    if (!sources.tools.length) return setToolTokens(undefined)
-    let live = true
-    adapter.sessions.measure(conversationId, routerPrompt(tools as never)).then(
-      (m) => live && setToolTokens(m.tokens),
-      () => undefined,
-    )
-    return () => void (live = false)
-  }, [tools, sources.tools.length, conversationId])
   const modelOptions: ChromeModelOptions = {
     conversationId,
     systemPrompt: settings.systemPrompt,
@@ -168,128 +113,157 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
   const { messages, sendMessage, setMessages, stop, isLoading, error } = useChat({
     initialMessages,
     connection,
+    onChunk: (c) => {
+      const chunk = c as StreamChunk & { name?: string; value?: { stage?: string }; toolName?: string }
+      if (chunk.type === 'CUSTOM' && chunk.name === 'stage' && chunk.value?.stage === 'routing')
+        setStage({ label: 'Deciding whether a tool would help…' })
+      else if (chunk.type === 'TOOL_CALL_END') setStage({ label: `Running ${chunk.toolName?.replace(/_/g, ' ') ?? 'a tool'}…` })
+      else if (chunk.type === 'TEXT_MESSAGE_CONTENT') setStage(undefined)
+    },
   })
+  const busy = isLoading || taskBusy
 
-  // Opening a saved chat: build its session now so the context budget shows immediately.
+  // summarising older turns can take a while; say so
   useEffect(() => {
-    if (!initialMessages.length) {
-      // new chat: show the model's full window before the first message
-      let live = true
-      adapter.sessions.measure(conversationId, ' ').then(
-        (m) => {
-          const s = { usage: 0, window: m.window, compacted: 0 }
-          if (live && !adapter.sessions.stats(conversationId)) (setStats(s), onStats(s))
-        },
-        () => undefined,
-      )
-      return () => void (live = false)
-    }
-    const ac = new AbortController()
-    adapter.sessions
-      .warm(conversationId, convertMessagesToModelMessages(initialMessages), live.current.modelOptions, ac.signal)
-      .then((s) => {
-        if (ac.signal.aborted) return
-        setStats(s)
-        onStats(s)
-      })
-      .catch((e: Error) => {
-        if (!ac.signal.aborted && /QuotaExceeded|too large|context/i.test(`${e.name} ${e.message}`)) setOverflow(true)
-      }) // other errors surface on the next send
-    return () => ac.abort()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const onCompact = (e: Event) =>
+      (e as CustomEvent<string>).detail === conversationId && setStage({ label: 'Summarizing older messages to make room…' })
+    adapter.sessions.events.addEventListener('compact', onCompact)
+    return () => adapter.sessions.events.removeEventListener('compact', onCompact)
   }, [conversationId])
 
-  // Persist whenever the conversation settles.
+  useConversationPersistence({ conversationId, exists, initialMessages, messages, busy })
+  const warm = useSessionWarmup({ adapter, conversationId, initialMessages, modelOptions, ready: settingsReady })
+
+  // after each turn: refresh the memory budget, clear the stage, tell screen readers once
+  const wasLoading = useRef(false)
   useEffect(() => {
-    if (isLoading || taskBusy || !messages.length) return
-    const snapshot = messages.map(toStored)
-    saving.current = saving.current.then(async () => {
-      if (!created.current) {
-        await db.createConversation(conversationId, NEW_TITLE)
-        created.current = true
-      }
-      await db.saveMessages(conversationId, snapshot)
-      const firstUser = messages.find((m) => m.role === 'user')
-      if (!titled.current && firstUser && messages.some((m) => m.role === 'assistant')) {
-        titled.current = true
-        const title = await makeTitle(messageText(firstUser) || 'Image chat')
-        await db.renameConversation(conversationId, title)
-      }
-    }).catch((e) => console.error('save failed', e))
-    const s = adapter.sessions.stats(conversationId)
-    setStats(s)
-    onStats(s)
-  }, [messages, isLoading, taskBusy, conversationId, onStats])
+    if (wasLoading.current && !isLoading) {
+      warm.refresh()
+      setStage(undefined)
+      setAnnounce(error ? 'The reply failed.' : 'Reply finished.')
+    }
+    wasLoading.current = isLoading
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLoading])
+  useEffect(() => onStats(warm.stats), [warm.stats, onStats])
 
-  const send = useCallback((d: Draft) => void sendMessage({ content: draftToContent(d) as any }), [sendMessage])
+  // how much model memory the router prompt for external tools costs
+  const [toolTokens, setToolTokens] = useState<number>()
+  useEffect(() => {
+    if (!sources.tools.length) return setToolTokens(undefined)
+    let alive = true
+    adapter.sessions.measure(conversationId, routerPrompt(tools)).then(
+      (m) => alive && setToolTokens(m.tokens),
+      () => undefined,
+    )
+    return () => void (alive = false)
+  }, [tools, sources.tools.length, conversationId])
 
+  // callbacks read messages through a ref so they stay stable and memoised
+  // Message rows don't re-render on every streamed token
+  const msgs = useRef(messages)
+  msgs.current = messages
+
+  const send = useCallback(
+    (d: Draft) => {
+      setTaskFailure(undefined)
+      void sendMessage(draftToContent(d))
+    },
+    [sendMessage],
+  )
+
+  /** Resend from a user message; later turns are removed, with Undo. */
   const resendFrom = useCallback(
     (userIndex: number, replaceText?: string) => {
-      const user = messages[userIndex]
+      const before = msgs.current
+      const user = before[userIndex]
       if (!user) return
-      setMessages(messages.slice(0, userIndex))
-      void sendMessage({ content: userContent(user, replaceText) })
+      const removed = before.length - userIndex - 1
+      setTaskFailure(undefined)
+      setMessages(before.slice(0, userIndex))
+      void sendMessage(userContent(user, replaceText))
+      if (removed > 1)
+        toast.show({
+          text: `Removed ${removed - 1} later message${removed - 1 === 1 ? '' : 's'}`,
+          action: {
+            label: 'Undo',
+            run: () => {
+              stop()
+              setMessages(before)
+            },
+          },
+        })
     },
-    [messages, setMessages, sendMessage],
+    [setMessages, sendMessage, stop, toast],
   )
 
   const onEdit = useCallback(
-    (id: string, text: string) => resendFrom(messages.findIndex((m) => m.id === id), text),
-    [messages, resendFrom],
+    (id: string, text: string) => resendFrom(msgs.current.findIndex((m) => m.id === id), text),
+    [resendFrom],
   )
 
   const onRegenerate = useCallback(
     (id: string) => {
-      const i = messages.findIndex((m) => m.id === id)
-      for (let u = i - 1; u >= 0; u--) if (messages[u]!.role === 'user') return resendFrom(u)
+      const list = msgs.current
+      const i = list.findIndex((m) => m.id === id)
+      for (let u = i - 1; u >= 0; u--) if (list[u]!.role === 'user') return resendFrom(u)
     },
-    [messages, resendFrom],
+    [resendFrom],
   )
 
   const onTask = useCallback(
     async (id: string, t: TaskId) => {
-      const source = messages.find((m) => m.id === id)
+      const source = msgs.current.find((m) => m.id === id)
       if (!source) return
       setTaskBusy(true)
-      setTaskError(undefined)
+      setTaskFailure(undefined)
+      setStage({ label: `${taskLabel(t).replace(' (Chrome AI)', '')}…` })
       try {
         const result = await runTask(t, messageText(source))
         setMessages([
-          ...messages,
+          ...msgs.current,
           {
             id: generateMessageId(),
             role: 'assistant',
             parts: [{ type: 'text', content: result }],
-            metadata: { task: `${TASK_LABELS[t]} (Chrome AI)` },
+            metadata: { task: taskLabel(t) },
             createdAt: new Date(),
           },
         ])
       } catch (e) {
-        setTaskError(`${TASK_LABELS[t]} failed: ${(e as Error).message}`)
+        setTaskFailure({ id, task: t, message: `${taskLabel(t).replace(' (Chrome AI)', '')} failed. ${friendlyError(e)}` })
       } finally {
         setTaskBusy(false)
+        setStage(undefined)
       }
     },
-    [messages, setMessages],
+    [setMessages],
   )
 
-  const lastUserIndex = messages.findLastIndex((m) => m.role === 'user')
-  const retry = () => lastUserIndex >= 0 && resendFrom(lastUserIndex)
+  const retryChat = () => {
+    const i = msgs.current.findLastIndex((m) => m.role === 'user')
+    if (i >= 0) resendFrom(i)
+  }
 
   // Stick to the bottom while streaming, unless the reader scrolled up.
   const scroller = useRef<HTMLDivElement>(null)
-  const pinned = useRef(true)
+  const [pinned, setPinned] = useState(true)
+  const pinnedRef = useRef(true)
   useEffect(() => {
     const el = scroller.current
-    if (el && pinned.current) el.scrollTop = el.scrollHeight
-  }, [messages, isLoading, taskBusy])
+    if (el && pinnedRef.current) el.scrollTop = el.scrollHeight
+  }, [messages, busy, stage])
+  const jumpToLatest = () => {
+    scroller.current?.scrollTo({ top: scroller.current.scrollHeight, behavior: 'smooth' })
+    pinnedRef.current = true
+    setPinned(true)
+  }
 
   const tasks = useMemo(() => availableTasks(caps), [caps])
   const measure = useCallback((text: string) => adapter.sessions.measure(conversationId, text), [conversationId])
   const last = messages.at(-1)
+  const lastAssistantId = messages.findLast((m) => m.role === 'assistant' && !m.metadata?.task)?.id
   const waiting = (isLoading && last?.role === 'user') || taskBusy
-  const busy = isLoading || taskBusy
-  const compacted = stats?.compacted ?? 0
 
   return (
     <div {...stylex.props(styles.shell)}>
@@ -298,79 +272,82 @@ export function ChatView({ conversationId, initialMessages, exists, caps, settin
         {...stylex.props(styles.scroll)}
         onScroll={(e) => {
           const el = e.currentTarget
-          pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+          pinnedRef.current = atBottom
+          if (atBottom !== pinned) setPinned(atBottom)
         }}
       >
-        <div {...stylex.props(styles.column)} aria-live="polite">
-          {!messages.length && <EmptyState hasTab={!!platform.getPageContext} onPick={(text) => send({ text, attachments: [], skills: [] })} />}
+        <div {...stylex.props(styles.column)}>
+          {!messages.length && (
+            <EmptyState hasTab={!!platform.getPageContext} onPick={(text) => send({ text, attachments: [], skills: [] })} />
+          )}
           {messages.map((m, i) =>
-            m.role === 'assistant' && m !== last && !m.parts.some((p: any) => p.type !== 'text' || p.content.trim()) ? null : (
-            <div key={m.id}>
-              {compacted > 0 && i === compacted && (
-                <p {...stylex.props(styles.divider)}>Earlier messages were summarized to fit the model’s memory</p>
-              )}
-              <Message
-                message={m}
-                streaming={isLoading && m === last && m.role === 'assistant'}
-                busy={busy}
-                tasks={tasks}
-                onEdit={onEdit}
-                onRegenerate={onRegenerate}
-                onTask={onTask}
-              />
-            </div>
+            isBlankAssistant(m) && m !== last ? null : (
+              <div key={m.id}>
+                {(warm.stats?.compacted ?? 0) > 0 && i === warm.stats!.compacted && (
+                  <p {...stylex.props(styles.divider)}>Earlier messages were summarized to fit the model’s memory</p>
+                )}
+                <Message
+                  message={m}
+                  streaming={isLoading && m === last && m.role === 'assistant'}
+                  busy={busy}
+                  tasks={tasks}
+                  canRegenerate={m.id === lastAssistantId}
+                  onEdit={onEdit}
+                  onRegenerate={onRegenerate}
+                  onTask={onTask}
+                />
+              </div>
             ),
           )}
           {waiting && <Skeleton />}
-          {(error || taskError) && !busy && (
+          {busy && stage && (
+            <p role="status" {...stylex.props(styles.stage)}>
+              {stage.label}
+            </p>
+          )}
+          {!busy && taskFailure && (
             <div role="alert" {...stylex.props(styles.error)}>
               <Icon name="alert" />
-              <span>{taskError ?? error?.message}</span>
-              {error && (
-                <Button variant="quiet" icon="refresh" onClick={retry}>
-                  Retry
-                </Button>
-              )}
+              <span>{taskFailure.message}</span>
+              <Button variant="quiet" icon="refresh" onClick={() => onTask(taskFailure.id, taskFailure.task)}>
+                Try again
+              </Button>
+            </div>
+          )}
+          {!busy && !taskFailure && error && (
+            <div role="alert" {...stylex.props(styles.error)}>
+              <Icon name="alert" />
+              <span>{friendlyError(error)}</span>
+              <Button variant="quiet" icon="refresh" onClick={retryChat}>
+                Retry
+              </Button>
             </div>
           )}
         </div>
       </div>
+      <span role="status" aria-live="polite" {...stylex.props(styles.srOnly)}>
+        {announce}
+      </span>
       <div {...stylex.props(styles.composer)}>
+        {!pinned && messages.length > 0 && (
+          <Button variant="quiet" icon="download" onClick={jumpToLatest} xstyle={styles.jump}>
+            Jump to latest
+          </Button>
+        )}
         <ApprovalCards />
         <SourceChips chips={sources.chips} onRemove={sources.remove} dropped={sources.dropped} toolTokens={toolTokens} />
-        {overflow && (
-          <div role="status" {...stylex.props(styles.fullNotice)}>
-            <Icon name="alert" />
-            <span {...stylex.props(styles.fullText)}>
-              This chat no longer fits in the model’s memory, so it can’t continue. Start a new chat to keep going.
-            </span>
-            <Button variant="quiet" icon="plus" onClick={onNewChat}>
-              Start new chat
-            </Button>
-          </div>
-        )}
-        {!overflow && stats && contextBudget(stats).level === 'full' && (
-          <div role="status" {...stylex.props(styles.fullNotice)}>
-            <Icon name="alert" />
-            <span {...stylex.props(styles.fullText)}>
-              This chat has used {contextBudget(stats).pct}% of the model’s memory (
-              {contextBudget(stats).left.toLocaleString()} tokens left). Older messages will be summarized to make room, which
-              can lose detail.
-            </span>
-            <Button variant="quiet" icon="plus" onClick={onNewChat}>
-              Start new chat
-            </Button>
-          </div>
-        )}
+        <ContextNotices stats={warm.stats} overflow={warm.overflow} onNewChat={onNewChat} />
         <Composer
           caps={caps}
           busy={busy}
           onSend={send}
           onStop={stop}
-          incomingPage={incomingPage}
+          incomingPage={props.incomingPage}
+          onIncomingUsed={props.onIncomingUsed}
           inputRef={inputRef}
           measure={measure}
-          full={overflow}
+          full={warm.overflow}
           skills={skills}
           sources={sources.items}
           onAddSource={sources.add}
@@ -404,9 +381,10 @@ function EmptyState({ hasTab, onPick }: { hasTab: boolean; onPick: (text: string
   )
 }
 
+/** Sized like a short reply so the first tokens don't shift the layout. */
 function Skeleton() {
   return (
-    <div aria-label="Thinking" role="status" {...stylex.props(styles.skeleton)}>
+    <div aria-hidden {...stylex.props(styles.skeleton)}>
       <span {...stylex.props(styles.bone, styles.boneW(92))} />
       <span {...stylex.props(styles.bone, styles.boneW(78))} />
       <span {...stylex.props(styles.bone, styles.boneW(54))} />
@@ -427,29 +405,36 @@ const styles = stylex.create({
     paddingBottom: space.lg,
   },
   composer: {
+    position: 'relative',
     width: '100%',
     maxWidth: `calc(${size.readable} + 2 * ${space.lg})`,
     marginInline: 'auto',
     paddingInline: space.lg,
     paddingBottom: space.lg,
   },
-  fullNotice: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: space.sm,
-    flexWrap: 'wrap',
-    marginBottom: space.sm,
-    color: color.warn,
-    fontFamily: font.ui,
-    fontSize: font.sm,
+  jump: {
+    position: 'absolute',
+    bottom: `calc(100% + ${space.sm})`,
+    left: '50%',
+    transform: 'translateX(-50%)',
+    borderRadius: radius.pill,
+    boxShadow: shadow.popover,
+    zIndex: 5,
   },
-  fullText: { flex: 1, minWidth: '200px', lineHeight: 1.4 },
   divider: {
     textAlign: 'center',
     fontFamily: font.ui,
     fontSize: font.xs,
     color: color.muted,
     marginBlock: space.lg,
+  },
+  stage: {
+    margin: 0,
+    marginTop: `calc(-1 * ${space.md})`,
+    marginBottom: space.xl,
+    fontFamily: font.ui,
+    fontSize: font.xs,
+    color: color.muted,
   },
   error: {
     display: 'flex',
@@ -460,6 +445,14 @@ const styles = stylex.create({
     fontFamily: font.ui,
     fontSize: font.sm,
     marginBottom: space.lg,
+  },
+  srOnly: {
+    position: 'absolute',
+    width: '1px',
+    height: '1px',
+    overflow: 'hidden',
+    clipPath: 'inset(50%)',
+    whiteSpace: 'nowrap',
   },
   empty: { paddingTop: space.xxxl, paddingBottom: space.xl },
   emptyTitle: {
@@ -501,7 +494,7 @@ const styles = stylex.create({
     borderRadius: radius.sm,
     backgroundColor: color.sunken,
     animationName: shimmer,
-    animationDuration: '1.4s',
+    animationDuration: motion.loop,
     animationIterationCount: 'infinite',
   },
   boneW: (pct: number) => ({ width: `${pct}%` }),

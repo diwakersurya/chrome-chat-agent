@@ -15,11 +15,24 @@ let worker: Worker | undefined
 const pending = new Map<number, Pending>()
 let seq = 0
 
+function failPending(reason: string) {
+  for (const p of pending.values()) p.reject(new Error(reason))
+  pending.clear()
+}
+
+function stopWorker(reason: string) {
+  worker?.terminate()
+  worker = undefined
+  failPending(reason)
+}
+
 function getWorker() {
   if (worker) return worker
   worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
-  // release the OPFS lock immediately so the next page load can open the DB
-  addEventListener('pagehide', () => worker?.terminate(), { once: true })
+  worker.onerror = (e) => {
+    e.preventDefault()
+    stopWorker(`The storage worker failed${e.message ? `: ${e.message}` : ''}.`)
+  }
   worker.onmessage = (e) => {
     const d = e.data
     if (d.type === 'change') {
@@ -33,6 +46,14 @@ function getWorker() {
     else p.resolve(d.result)
   }
   return worker
+}
+
+// Release the OPFS lock as soon as the page is really going away so the next
+// load can open the DB. A page entering the back/forward cache keeps its worker.
+if (typeof addEventListener === 'function') {
+  addEventListener('pagehide', (e) => {
+    if (!(e as PageTransitionEvent).persisted) stopWorker('The page was closed.')
+  })
 }
 
 function call(fn: string, args: unknown[]) {

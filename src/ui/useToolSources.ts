@@ -6,7 +6,7 @@ import { featureState } from '../core/features'
 import { mcp } from '../core/mcp/instance'
 import { serverPrefix, type ServerStatus } from '../core/mcp/manager'
 import { PAGE_SOURCE, pageToolsAsChatTools } from '../core/mcp/pageTools'
-import { usePlatform, type PageTool } from '../platform/platform'
+import { usePlatform, type PageTools } from '../platform/platform'
 import { FeatureEnvContext } from './components/Gated'
 import type { MentionItem } from './components/MentionPicker'
 
@@ -42,10 +42,10 @@ export function useToolSources() {
   useEffect(() => mcp.subscribe(bump), [])
 
   // extension: WebMCP tools of the active tab, refreshed as tabs change
-  const [page, setPage] = useState<{ origin: string; tools: PageTool[] }>()
+  const [page, setPage] = useState<PageTools>()
   useEffect(() => {
     if (!platform.getPageTools) return
-    const load = () => platform.getPageTools!().then(setPage, () => setPage({ origin: '', tools: [] }))
+    const load = () => platform.getPageTools!().then(setPage, () => setPage({ tabId: -1, origin: '', tools: [] }))
     load()
     return platform.onTabChange?.(load)
   }, [platform])
@@ -103,7 +103,7 @@ export function useToolSources() {
     ;(async () => {
       const lists = await Promise.all(
         selected.map(async (id) => {
-          if (id === PAGE_SOURCE) return webmcp.available && page ? pageToolsAsChatTools(platform, page.origin, page.tools) : []
+          if (id === PAGE_SOURCE) return webmcp.available && page ? pageToolsAsChatTools(platform, page) : []
           const s = servers.find((x) => x.id === id)
           return s?.enabled ? mcp.toolsFor(s) : []
         }),

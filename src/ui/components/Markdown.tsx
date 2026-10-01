@@ -57,6 +57,23 @@ const components: ComponentProps<typeof ReactMarkdown>['components'] = {
     if (!lang && !text.includes('\n')) return <code {...stylex.props(styles.inlineCode)}>{children}</code>
     return <CodeBlock code={text.replace(/\n$/, '')} lang={lang ?? ''} />
   },
+  // Never load remote images from model output: a prompt-injected reply could
+  // smuggle chat text out in an image URL. Show a link the user can choose to open.
+  img: ({ src, alt }) => {
+    const url = typeof src === 'string' ? src : ''
+    let host = ''
+    try {
+      host = new URL(url).hostname
+    } catch {
+      // relative or invalid
+    }
+    return (
+      <a href={url} target="_blank" rel="noreferrer noopener" {...stylex.props(styles.link)}>
+        Image{alt ? `: ${alt}` : ''}
+        {host ? ` (${host})` : ''}
+      </a>
+    )
+  },
   a: ({ href, children }) => (
     <a href={href} target="_blank" rel="noreferrer noopener" {...stylex.props(styles.link)}>
       {children}

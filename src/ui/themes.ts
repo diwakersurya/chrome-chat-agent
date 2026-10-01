@@ -15,7 +15,8 @@ export const lightTheme = stylex.createTheme(color, {
   signal: '#1D8466',
   warn: '#9A5B00',
   danger: '#B3261E',
-  focus: '#2A4F8266',
+  focus: '#2A4F82',
+  scrim: 'rgba(10, 16, 24, 0.35)',
 })
 
 export const darkTheme = stylex.createTheme(color, {
@@ -31,5 +32,6 @@ export const darkTheme = stylex.createTheme(color, {
   signal: '#4CC79F',
   warn: '#E3B062',
   danger: '#F2877E',
-  focus: '#8DB0E666',
+  focus: '#8DB0E6',
+  scrim: 'rgba(0, 0, 0, 0.5)',
 })

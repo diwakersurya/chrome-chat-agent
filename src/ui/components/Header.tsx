@@ -1,9 +1,11 @@
 import * as stylex from '@stylexjs/stylex'
+import { useState, type Ref } from 'react'
 import type { Availability } from '../../core/ai/capabilities'
 import type { ContextStats } from '../../core/ai/sessionCache'
 import { contextBudget } from '../contextBudget'
 import { color, font, motion, radius, size, space } from '../tokens.stylex'
 import { Button } from './Button'
+import { Tip } from './Tip'
 
 interface Props {
   title: string
@@ -11,9 +13,12 @@ interface Props {
   progress?: number
   stats?: ContextStats
   showMenu: boolean
+  menuRef?: Ref<HTMLButtonElement>
   onMenu: () => void
   onSettings: () => void
   onCapabilities: () => void
+  /** Markdown of the current chat, or undefined when there is nothing to copy yet */
+  getChatMarkdown?: () => Promise<string | undefined>
 }
 
 const STATUS: Record<Availability, string> = {
@@ -23,43 +28,74 @@ const STATUS: Record<Availability, string> = {
   unavailable: 'Chrome’s built-in model is not available on this device.',
 }
 
-export function Header({ title, model, progress, stats, showMenu, onMenu, onSettings, onCapabilities }: Props) {
+/** 9159 → "9.2k" for the narrow side panel */
+const compact = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1).replace(/\.0$/, '')}k` : String(n))
+
+export function Header({ title, model, progress, stats, showMenu, menuRef, onMenu, onSettings, onCapabilities, getChatMarkdown }: Props) {
+  const [copied, setCopied] = useState(false)
   const budget = stats && contextBudget(stats)
-  const statusText =
-    model === 'downloading' && progress != null ? `${STATUS.downloading} ${Math.round(progress * 100)}%` : STATUS[model]
+  const pct = progress != null ? Math.round(progress * 100) : undefined
+  const statusText = model === 'downloading' && pct != null ? `${STATUS.downloading} ${pct}% done.` : STATUS[model]
   return (
     <header {...stylex.props(styles.header)}>
-      {showMenu && <Button icon="menu" label="Show chats" onClick={onMenu} />}
+      {showMenu && <Button ref={menuRef} icon="menu" label="Show chats (⌘K)" aria-haspopup="dialog" onClick={onMenu} />}
       <h1 {...stylex.props(styles.title)}>{title}</h1>
       {stats && budget && (
-        <span
-          role="meter"
-          aria-label="Model memory used by this chat"
-          aria-valuenow={stats.usage}
-          aria-valuemin={0}
-          aria-valuemax={stats.window}
-          aria-valuetext={`${budget.left.toLocaleString()} of ${stats.window.toLocaleString()} tokens left`}
-          title={`Using ${stats.usage.toLocaleString()} of ${stats.window.toLocaleString()} tokens (${budget.pct}%). ${budget.left.toLocaleString()} left in this chat.${stats.compacted ? ' Earlier messages have been summarized.' : ''}`}
-          {...stylex.props(styles.budget)}
+        <Tip
+          align="end"
+          text={`Using ${stats.usage.toLocaleString()} of ${stats.window.toLocaleString()} tokens (${budget.pct}%). ${budget.left.toLocaleString()} left in this chat.${stats.compacted ? ' Earlier messages have been summarized.' : ''}`}
         >
-          <span {...stylex.props(styles.meter)}>
-            <span
-              {...stylex.props(
-                styles.meterFill(budget.pct),
-                budget.level === 'filling' && styles.meterFilling,
-                budget.level === 'full' && styles.meterFull,
-              )}
-            />
+          <span
+            tabIndex={0}
+            role="meter"
+            aria-label="Model memory used by this chat"
+            aria-valuenow={stats.usage}
+            aria-valuemin={0}
+            aria-valuemax={stats.window}
+            aria-valuetext={`${budget.left.toLocaleString()} of ${stats.window.toLocaleString()} tokens left`}
+            {...stylex.props(styles.budget)}
+          >
+            <span {...stylex.props(styles.meter)}>
+              <span
+                {...stylex.props(
+                  styles.meterFill(budget.pct),
+                  budget.level === 'filling' && styles.meterFilling,
+                  budget.level === 'full' && styles.meterFull,
+                )}
+              />
+            </span>
+            <span {...stylex.props(styles.budgetText, styles.wide, budget.level === 'full' && styles.budgetTextFull)}>
+              {budget.left.toLocaleString()} of {stats.window.toLocaleString()} tokens left
+            </span>
+            <span {...stylex.props(styles.budgetText, styles.narrow, budget.level === 'full' && styles.budgetTextFull)}>
+              {compact(budget.left)} left
+            </span>
           </span>
-          <span {...stylex.props(styles.budgetText, budget.level === 'full' && styles.budgetTextFull)}>
-            {budget.left.toLocaleString()} of {stats.window.toLocaleString()} tokens left
-          </span>
-        </span>
+        </Tip>
       )}
-      <span role="img" aria-label={statusText} title={statusText} {...stylex.props(styles.chip)}>
-        <span {...stylex.props(styles.dot, styles[model], model === 'downloading' && styles.ring(progress ?? 0))} />
-        <span {...stylex.props(styles.chipLabel)}>On-device</span>
-      </span>
+      <Tip align="end" text={statusText}>
+        <span tabIndex={0} role="img" aria-label={statusText} {...stylex.props(styles.chip)}>
+          <span {...stylex.props(styles.dot, styles[model], model === 'downloading' && styles.ring(progress ?? 0))} />
+          {model === 'downloading' && pct != null ? (
+            <span {...stylex.props(styles.chipLabel)}>{pct}%</span>
+          ) : (
+            <span {...stylex.props(styles.chipLabel, styles.wide)}>On-device</span>
+          )}
+        </span>
+      </Tip>
+      {getChatMarkdown && (
+        <Button
+          icon={copied ? 'check' : 'copy'}
+          label={copied ? 'Copied' : 'Copy chat as Markdown'}
+          onClick={async () => {
+            const md = await getChatMarkdown()
+            if (!md) return
+            await navigator.clipboard.writeText(md)
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1500)
+          }}
+        />
+      )}
       <Button icon="info" label="What works here" onClick={onCapabilities} />
       <Button icon="settings" label="Settings" onClick={onSettings} />
     </header>
@@ -67,6 +103,8 @@ export function Header({ title, model, progress, stats, showMenu, onMenu, onSett
 }
 
 const spin = stylex.keyframes({ from: { transform: 'rotate(0deg)' }, to: { transform: 'rotate(360deg)' } })
+
+const NARROW = '@media (max-width: 480px)'
 
 const styles = stylex.create({
   header: {
@@ -92,18 +130,14 @@ const styles = stylex.create({
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  budget: { display: 'inline-flex', alignItems: 'center', gap: space.sm, cursor: 'default' },
-  budgetText: {
-    fontSize: font.xs,
-    fontVariantNumeric: 'tabular-nums',
-    color: color.muted,
-    whiteSpace: 'nowrap',
-    display: { default: 'inline', '@media (max-width: 420px)': 'none' },
-  },
+  budget: { display: 'inline-flex', alignItems: 'center', gap: space.sm, cursor: 'default', borderRadius: radius.sm },
+  budgetText: { fontSize: font.xs, fontVariantNumeric: 'tabular-nums', color: color.muted, whiteSpace: 'nowrap' },
+  wide: { display: { default: 'inline', [NARROW]: 'none' } },
+  narrow: { display: { default: 'none', [NARROW]: 'inline' } },
   budgetTextFull: { color: color.warn, fontWeight: 600 },
   meter: {
     position: 'relative',
-    width: '44px',
+    width: size.meter,
     height: space.xs,
     borderRadius: radius.pill,
     backgroundColor: color.sunken,
@@ -124,7 +158,7 @@ const styles = stylex.create({
     display: 'inline-flex',
     alignItems: 'center',
     gap: space.sm,
-    height: '26px',
+    height: size.chip,
     paddingInline: space.sm,
     borderRadius: radius.pill,
     borderWidth: 1,
@@ -134,14 +168,14 @@ const styles = stylex.create({
     cursor: 'default',
   },
   chipLabel: { fontSize: font.xs, fontWeight: 600, color: color.muted, letterSpacing: '0.02em' },
-  dot: { position: 'relative', width: '10px', height: '10px', borderRadius: radius.pill },
+  dot: { position: 'relative', width: size.dotLg, height: size.dotLg, borderRadius: radius.pill, flexShrink: 0 },
   available: { backgroundColor: color.signal, boxShadow: `0 0 0 3px color-mix(in srgb, ${color.signal} 22%, transparent)` },
   downloadable: { backgroundColor: color.warn },
   unavailable: { backgroundColor: color.danger },
   downloading: {
     backgroundColor: 'transparent',
     animationName: spin,
-    animationDuration: '1.6s',
+    animationDuration: motion.loop,
     animationTimingFunction: 'linear',
     animationIterationCount: 'infinite',
   },

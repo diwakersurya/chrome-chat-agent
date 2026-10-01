@@ -32,9 +32,18 @@ select {
   font: inherit;
   color: inherit;
 }
+/* solid accent ring (≥3:1 on both themes); matches color.focus in tokens */
 :focus-visible {
-  outline: 2px solid #2a4f8266;
+  outline: 2px solid #2a4f82;
   outline-offset: 2px;
+}
+html[data-theme='dark'] :focus-visible {
+  outline-color: #8db0e6;
+}
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme='light']) :focus-visible {
+    outline-color: #8db0e6;
+  }
 }
 
 /* Shiki dual-theme output */
@@ -62,7 +71,10 @@ html[data-theme='dark'] .shiki span {
   *,
   *::before,
   *::after {
+    /* run once and stop, so looping indicators (caret, shimmer, spinner) hold still */
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

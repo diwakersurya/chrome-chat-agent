@@ -15,14 +15,21 @@ export interface PageTool {
   readOnly: boolean
 }
 
+export interface PageTools {
+  tabId: number
+  origin: string
+  tools: PageTool[]
+}
+
 /** Everything that differs between the web and extension builds. */
 export interface Platform {
   target: 'web' | 'ext'
   /** read the active tab (extension only) */
   getPageContext?: () => Promise<PageContext>
-  /** WebMCP tools of the active tab; undefined when the page has no WebMCP (extension only) */
-  getPageTools?: () => Promise<{ origin: string; tools: PageTool[] }>
-  callPageTool?: (name: string, input: unknown) => Promise<unknown>
+  /** WebMCP tools of the active tab (extension only); `tabId` + `origin` bind later calls to that page */
+  getPageTools?: () => Promise<PageTools>
+  /** runs only if tab `tabId` is still showing `origin` */
+  callPageTool?: (target: { tabId: number; origin: string }, name: string, input: unknown) => Promise<unknown>
   /** notifies when the active tab changes or navigates */
   onTabChange?: (cb: () => void) => () => void
   /** selection sent from the context menu, delivered once */

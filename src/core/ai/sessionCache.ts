@@ -1,4 +1,5 @@
 import type { ModelMessage } from '@tanstack/ai'
+import { textOf } from '../messages'
 import { baseModelOptions, isDeterministicOnly } from './capabilities'
 
 // One LanguageModel session per conversation. TanStack sends the full history
@@ -37,6 +38,8 @@ interface Entry {
 type Summarise = (text: string) => Promise<string>
 
 const KEEP_RECENT = 4
+/** live sessions kept in memory; each holds model state in GPU/RAM */
+const MAX_SESSIONS = 2
 /** tokens kept free for the model's reply */
 export const RESERVE = 768
 
@@ -51,15 +54,6 @@ function partKey(p: any): string {
   return `[${p.type}:${src.mimeType ?? ''}:${v.length}:${v.slice(-24)}]`
 }
 
-function textOf(content: ModelMessage['content']): string {
-  if (content == null) return ''
-  if (typeof content === 'string') return content
-  return content
-    .filter((p) => p.type === 'text')
-    .map((p) => (p as { content: string }).content)
-    .join('\n')
-}
-
 function toolNameFor(messages: ModelMessage[], i: number) {
   const tid = messages[i]!.toolCallId
   for (let j = i - 1; j >= 0; j--) {
@@ -69,14 +63,21 @@ function toolNameFor(messages: ModelMessage[], i: number) {
   return messages[i]!.name ?? 'tool'
 }
 
-export function toolCallTextFor(call: ToolCallLike) {
+/**
+ * The assistant turn recorded for a tool call. The adapter appends exactly
+ * this to the session, and the cache recomputes it from TanStack's stored
+ * tool-call message, so both sides must use this one function.
+ */
+export const toolCallText = (tool: string, args: unknown) => JSON.stringify({ action: 'tool', tool, args })
+
+function toolCallTextFor(call: ToolCallLike) {
   let args: unknown = {}
   try {
     args = JSON.parse(call.function.arguments || '{}')
   } catch {
     // keep {}
   }
-  return JSON.stringify({ action: 'tool', tool: call.function.name, args })
+  return toolCallText(call.function.name, args)
 }
 
 export function messageKey(messages: ModelMessage[], i: number): string {
@@ -122,7 +123,7 @@ async function toPromptMessage(messages: ModelMessage[], i: number): Promise<Lan
     if (p.type === 'text') content.push({ type: 'text', value: p.content })
     else if (p.type === 'image') {
       const bytes = await sourceBytes(p.source)
-      content.push({ type: 'image', value: new Blob([bytes], { type: (p.source as any).mimeType }) })
+      content.push({ type: 'image', value: new Blob([bytes], { type: 'mimeType' in p.source ? p.source.mimeType : undefined }) })
     } else if (p.type === 'audio') {
       // decode recorded audio (webm/opus etc.) so the model gets raw PCM
       const bytes = await sourceBytes(p.source)
@@ -154,7 +155,12 @@ export interface DraftMeasure {
 }
 
 export class SessionCache {
+  /** insertion order doubles as recency: touched entries are re-inserted */
   private entries = new Map<string, Entry>()
+  /** serialises warm/prepare/compact per conversation so two builds can't race */
+  private locks = new Map<string, Promise<unknown>>()
+  /** fires 'compact' (detail: conversationId) when older turns are being summarised */
+  readonly events = new EventTarget()
   /** shared session used only to count tokens for chats that have no session yet */
   private measurer?: Promise<LanguageModel>
 
@@ -192,22 +198,47 @@ export class SessionCache {
     for (const id of [...this.entries.keys()]) this.drop(id)
   }
 
+  private locked<T>(conversationId: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.locks.get(conversationId) ?? Promise.resolve()
+    const run = prev.catch(() => undefined).then(fn)
+    this.locks.set(conversationId, run)
+    void run.finally(() => this.locks.get(conversationId) === run && this.locks.delete(conversationId)).catch(() => undefined)
+    return run
+  }
+
+  /** Mark as most recently used and evict the oldest idle sessions beyond MAX_SESSIONS. */
+  private touch(conversationId: string, e: Entry) {
+    this.entries.delete(conversationId)
+    this.entries.set(conversationId, e)
+    for (const [id, other] of this.entries) {
+      if (this.entries.size <= MAX_SESSIONS) break
+      // never evict a chat that is in the middle of a turn
+      if (id !== conversationId && !other.pendingKey) this.drop(id)
+    }
+  }
+
   /**
    * Build the session for an existing chat ahead of the next message, so its
    * context usage is known on open and the first reply doesn't pay the rebuild.
    */
-  async warm(conversationId: string, all: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
-    const messages = modelVisible(all)
-    if (!messages.length || this.entries.has(conversationId)) return this.stats(conversationId)
-    // rebuild() feeds messages[0..n-2]; pass a placeholder tail so every real message is included
-    const withTail = [...messages, { role: 'user', content: '' } as ModelMessage]
-    const keys = withTail.map((_, i) => messageKey(withTail, i))
-    await this.rebuild(conversationId, withTail, keys, config, JSON.stringify(config), 0, undefined, signal)
-    return this.stats(conversationId)
+  warm(conversationId: string, all: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
+    return this.locked(conversationId, async () => {
+      const messages = modelVisible(all)
+      if (!messages.length || this.entries.has(conversationId)) return this.stats(conversationId)
+      // rebuild() feeds messages[0..n-2]; pass a placeholder tail so every real message is included
+      const withTail = [...messages, { role: 'user', content: '' } as ModelMessage]
+      const keys = withTail.map((_, i) => messageKey(withTail, i))
+      await this.rebuild(conversationId, withTail, keys, config, JSON.stringify(config), 0, undefined, signal)
+      return this.stats(conversationId)
+    })
   }
 
   /** Make the session hold messages[0..n-2]; return the last message converted for prompting. */
-  async prepare(conversationId: string, all: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
+  prepare(conversationId: string, all: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
+    return this.locked(conversationId, () => this.prepareUnlocked(conversationId, all, config, signal))
+  }
+
+  private async prepareUnlocked(conversationId: string, all: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
     const messages = modelVisible(all)
     if (!messages.length) throw new Error('No messages to send')
     const n = messages.length
@@ -242,10 +273,11 @@ export class SessionCache {
       e = await this.compact(conversationId, messages, keys, config, configKey, signal)
     }
     e!.pendingKey = keys[n - 1]
+    this.touch(conversationId, e!)
     return { session: e!.session, last }
   }
 
-  commitAnswer(conversationId: string, _last: LanguageModelMessage, text: string) {
+  commitAnswer(conversationId: string, text: string) {
     const e = this.entries.get(conversationId)
     if (!e?.pendingKey) return
     e.fed.push(e.pendingKey, `a:${text}`)
@@ -270,7 +302,6 @@ export class SessionCache {
     summary: string | undefined,
     signal?: AbortSignal,
   ): Promise<Entry> {
-    this.drop(conversationId)
     const n = messages.length
     const history: LanguageModelMessage[] = []
     for (let i = offset; i < n - 1; i++) history.push(await toPromptMessage(messages, i))
@@ -292,6 +323,12 @@ export class SessionCache {
       signal,
       initialPrompts: [...(system ? [{ role: 'system' as const, content: system }] : []), ...history],
     } as LanguageModelCreateOptions)
+    // a cancelled build (chat closed, newer build) must not leak its session
+    if (signal?.aborted) {
+      session.destroy()
+      throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+    }
+    this.drop(conversationId)
     const entry: Entry = {
       session,
       configKey,
@@ -300,15 +337,17 @@ export class SessionCache {
       summarisedKeys: keys.slice(0, offset).join('\u0001'),
       fed: keys.slice(offset, n - 1),
     }
-    this.entries.set(conversationId, entry)
+    this.touch(conversationId, entry)
     return entry
   }
 
   /** The model rejected a turn as too long: summarise older turns now so the retry fits. */
-  async compactNow(conversationId: string, all: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
-    const messages = modelVisible(all)
-    const keys = messages.map((_, i) => messageKey(messages, i))
-    await this.compact(conversationId, messages, keys, config, JSON.stringify(config), signal)
+  compactNow(conversationId: string, all: ModelMessage[], config: SessionConfig, signal?: AbortSignal) {
+    return this.locked(conversationId, async () => {
+      const messages = modelVisible(all)
+      const keys = messages.map((_, i) => messageKey(messages, i))
+      await this.compact(conversationId, messages, keys, config, JSON.stringify(config), signal)
+    })
   }
 
   private async compact(
@@ -319,6 +358,7 @@ export class SessionCache {
     configKey: string,
     signal?: AbortSignal,
   ) {
+    this.events.dispatchEvent(new CustomEvent('compact', { detail: conversationId }))
     const n = messages.length
     const offset = Math.max(0, n - 1 - KEEP_RECENT)
     const old = messages

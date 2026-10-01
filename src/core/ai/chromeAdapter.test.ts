@@ -268,3 +268,45 @@ describe('history hygiene', () => {
     expect(initial.some((m) => m.role === 'assistant')).toBe(false)
   })
 })
+
+describe('session lifecycle', () => {
+  const saved: any[] = [
+    { role: 'user', content: 'q1' },
+    { role: 'assistant', content: 'A1' },
+  ]
+
+  it('serialises warm-up and a send for the same chat (one session, none leaked)', async () => {
+    const log = installFakeLanguageModel({ prompts: [], streams: ['A2'] })
+    const adapter = new ChromeTextAdapter()
+    const opts = { conversationId: 'r1', systemPrompt: 's' }
+    const [, events] = await Promise.all([
+      adapter.sessions.warm('r1', saved, opts),
+      collect(chat({ adapter, messages: [...saved, { role: 'user', content: 'q2' }], modelOptions: opts }) as AsyncIterable<any>),
+    ])
+    expect(textOf(events)).toBe('A2')
+    expect(log.created).toHaveLength(1)
+    expect(log.destroyed).toBe(0)
+  })
+
+  it('destroys a session whose build was cancelled', async () => {
+    const log = installFakeLanguageModel({ prompts: [], streams: [] })
+    const adapter = new ChromeTextAdapter()
+    const ac = new AbortController()
+    const p = adapter.sessions.warm('r2', saved, {}, ac.signal)
+    ac.abort()
+    await expect(p).rejects.toBeTruthy()
+    expect(log.created).toHaveLength(1)
+    expect(log.destroyed).toBe(1)
+    expect(adapter.sessions.stats('r2')).toBeUndefined()
+  })
+
+  it('keeps at most two idle sessions alive', async () => {
+    const log = installFakeLanguageModel({ prompts: [], streams: [] })
+    const adapter = new ChromeTextAdapter()
+    for (const id of ['a', 'b', 'c']) await adapter.sessions.warm(id, saved, {})
+    expect(log.created).toHaveLength(3)
+    expect(log.destroyed).toBe(1)
+    expect(adapter.sessions.stats('a')).toBeUndefined()
+    expect(adapter.sessions.stats('c')).toBeDefined()
+  })
+})

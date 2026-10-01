@@ -98,7 +98,10 @@ SQLite WASM (OPFS, worker) ◀─ typed RPC ◀─ useDbQuery (re-runs on table 
 
 ## Privacy
 
-- Nothing is sent anywhere. The app makes no network requests after it loads, and it has no analytics.
+- Nothing is sent anywhere. The app has no analytics and makes no network requests after it loads, except to MCP servers you add yourself.
+- Model output can't leak your chat through images: Markdown images are shown as links and never loaded, and a Content Security Policy blocks remote images and media in both builds.
+- The local MCP bridge command only accepts requests from this app's origin, so other websites can't drive your local servers.
+- Page tools (WebMCP) only run on the tab and site that offered them.
 - The extension reads a tab only when you click **Use this tab**, pick "Ask about selection", or when the agent calls `read_tab`, which you can turn off in Settings.
 - Chats live in the browser's origin-private file system (OPFS) for this site or extension. **Delete everything** in Settings removes them.
 

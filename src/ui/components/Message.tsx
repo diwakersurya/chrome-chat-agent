@@ -1,6 +1,7 @@
 import * as stylex from '@stylexjs/stylex'
 import type { UIMessage } from '@tanstack/ai-react'
 import { memo, useState } from 'react'
+import { messageText } from '../chatContent'
 import { parsePageContext } from '../pageContext'
 import { parseSkillPart } from '../../core/skills/skills'
 import { color, font, motion, radius, size, space } from '../tokens.stylex'
@@ -11,13 +12,10 @@ import { Icon } from './Icon'
 import { Markdown } from './Markdown'
 import { TaskMenu, type TaskId } from './TaskMenu'
 
-export function messageText(m: UIMessage) {
-  return m.parts
-    .filter((p) => p.type === 'text')
-    .map((p) => (p as { content: string }).content)
-    .filter((t) => !parsePageContext(t) && !parseSkillPart(t))
-    .join('\n\n')
-}
+type Part = UIMessage['parts'][number]
+type ToolCall = Extract<Part, { type: 'tool-call' }>
+type ToolResult = Extract<Part, { type: 'tool-result' }>
+type MediaSource = { type: 'data'; value: string; mimeType: string } | { type: 'url'; value: string }
 
 interface Props {
   message: UIMessage
@@ -27,16 +25,18 @@ interface Props {
   onEdit: (id: string, text: string) => void
   onRegenerate: (id: string) => void
   onTask: (id: string, task: TaskId) => void
+  /** only the latest reply can be regenerated (earlier ones would drop later turns) */
+  canRegenerate: boolean
 }
 
-export const Message = memo(function Message({ message, streaming, busy, tasks, onEdit, onRegenerate, onTask }: Props) {
+export const Message = memo(function Message({ message, streaming, busy, tasks, onEdit, onRegenerate, onTask, canRegenerate }: Props) {
   const [editing, setEditing] = useState(false)
   const tasksOk = useFeature('tasks').available && tasks.length > 0
   const isUser = message.role === 'user'
   const text = messageText(message)
   const taskLabel = (message.metadata as { task?: string } | undefined)?.task
   const results = new Map(
-    message.parts.filter((p) => p.type === 'tool-result').map((p: any) => [p.toolCallId, p]),
+    message.parts.filter((p): p is ToolResult => p.type === 'tool-result').map((p) => [p.toolCallId, p]),
   )
 
   if (editing) {
@@ -47,7 +47,7 @@ export const Message = memo(function Message({ message, streaming, busy, tasks, 
     <article {...stylex.props(styles.row, isUser && styles.rowUser)} aria-label={isUser ? 'You' : 'Assistant'}>
       <div {...stylex.props(isUser ? styles.user : styles.assistant)}>
         {taskLabel && <p {...stylex.props(styles.taskTag)}>{taskLabel}</p>}
-        {message.parts.map((part: any, i) => {
+        {message.parts.map((part, i) => {
           switch (part.type) {
             case 'text': {
               const page = parsePageContext(part.content)
@@ -73,14 +73,14 @@ export const Message = memo(function Message({ message, streaming, busy, tasks, 
                 <img
                   key={i}
                   alt="Attached image"
-                  src={srcOf(part.source)}
+                  src={srcOf(part.source as MediaSource)}
                   {...stylex.props(styles.media)}
                 />
               )
             case 'audio':
-              return <audio key={i} controls src={srcOf(part.source)} {...stylex.props(styles.audio)} />
+              return <audio key={i} controls src={srcOf(part.source as MediaSource)} {...stylex.props(styles.audio)} />
             case 'tool-call':
-              return <ToolRow key={i} name={part.name} args={part.arguments} result={results.get(part.id)} output={part.output} />
+              return <ToolRow key={i} call={part as ToolCall} result={results.get(part.id)} />
             default:
               return null
           }
@@ -93,12 +93,13 @@ export const Message = memo(function Message({ message, streaming, busy, tasks, 
           {isUser ? (
             <Button icon="edit" label="Edit and resend" disabled={busy} onClick={() => setEditing(true)} />
           ) : (
-            !taskLabel && <Button icon="refresh" label="Regenerate" disabled={busy} onClick={() => onRegenerate(message.id)} />
+            !taskLabel &&
+            canRegenerate && <Button icon="refresh" label="Regenerate" disabled={busy} onClick={() => onRegenerate(message.id)} />
           )}
           {tasksOk ? (
             <TaskMenu tasks={tasks} disabled={busy} onPick={(t) => onTask(message.id, t)} />
           ) : (
-            <Gated feature="tasks">
+            <Gated feature="tasks" align={isUser ? 'end' : 'start'}>
               <Button icon="wand" label="Transform with Chrome AI" />
             </Gated>
           )}
@@ -108,7 +109,7 @@ export const Message = memo(function Message({ message, streaming, busy, tasks, 
   )
 })
 
-const srcOf = (s: any) => (s.type === 'data' ? `data:${s.mimeType};base64,${s.value}` : s.value)
+const srcOf = (s: MediaSource) => (s.type === 'data' ? `data:${s.mimeType};base64,${s.value}` : s.value)
 
 function PageChip({ title, url }: { title: string; url: string }) {
   return (
@@ -119,19 +120,31 @@ function PageChip({ title, url }: { title: string; url: string }) {
   )
 }
 
-function ToolRow({ name, args, result, output }: { name: string; args: string; result?: any; output?: unknown }) {
-  const out = result?.content ?? (output === undefined ? undefined : JSON.stringify(output, null, 2))
+/** "notes_add_note" from an MCP server prefix → tool "add note" from "notes". */
+function toolLabel(name: string) {
+  const page = /^page_(.+)$/.exec(name)
+  if (page) return { tool: page[1]!.replace(/_/g, ' '), source: 'this page' }
+  return { tool: name.replace(/_/g, ' '), source: undefined }
+}
+
+function ToolRow({ call, result }: { call: ToolCall; result?: ToolResult }) {
+  const out = result?.content ?? (call.output === undefined ? undefined : JSON.stringify(call.output, null, 2))
+  const failed = result?.state === 'error' || !!result?.error
+  const { tool, source } = toolLabel(call.name)
   return (
     <details {...stylex.props(styles.tool)}>
       <summary {...stylex.props(styles.toolSummary)}>
         <Icon name="tool" />
         <span>
-          Used <strong>{name.replace(/_/g, ' ')}</strong>
+          {failed ? 'Tried' : 'Used'} <strong>{tool}</strong>
+          {source && <> from {source}</>}
         </span>
-        {result?.state === 'error' || result?.error ? <span {...stylex.props(styles.toolErr)}>failed</span> : null}
+        {failed && <span {...stylex.props(styles.toolErr)}>failed</span>}
       </summary>
-      <pre {...stylex.props(styles.toolPre)}>{pretty(args)}</pre>
-      {out !== undefined && <pre {...stylex.props(styles.toolPre)}>{typeof out === 'string' ? pretty(out) : JSON.stringify(out)}</pre>}
+      <pre {...stylex.props(styles.toolPre)}>{pretty(call.arguments)}</pre>
+      {out !== undefined && (
+        <pre {...stylex.props(styles.toolPre)}>{typeof out === 'string' ? pretty(out) : JSON.stringify(out)}</pre>
+      )}
     </details>
   )
 }
@@ -214,7 +227,7 @@ const styles = stylex.create({
     fontSize: font.xs,
     color: color.muted,
   },
-  media: { maxWidth: '100%', maxHeight: '320px', borderRadius: radius.md, display: 'block' },
+  media: { maxWidth: '100%', maxHeight: size.media, borderRadius: radius.md, display: 'block' },
   audio: { maxWidth: '100%' },
   caret: {
     display: 'inline-block',
@@ -224,13 +237,12 @@ const styles = stylex.create({
     backgroundColor: color.accent,
     borderRadius: '1px',
     animationName: blink,
-    animationDuration: '1s',
+    animationDuration: motion.blink,
     animationIterationCount: 'infinite',
   },
   actions: {
     display: 'flex',
     gap: space.xxs,
-    opacity: { default: 0.55, ':hover': 1, ':focus-within': 1 },
     transitionProperty: 'opacity',
     transitionDuration: motion.fast,
   },
@@ -286,7 +298,7 @@ const styles = stylex.create({
     fontSize: font.xs,
     whiteSpace: 'pre-wrap',
     overflowWrap: 'anywhere',
-    maxHeight: '240px',
+    maxHeight: size.toolOutput,
     overflowY: 'auto',
   },
   edit: { display: 'flex', flexDirection: 'column', gap: space.sm, marginBottom: space.xl },

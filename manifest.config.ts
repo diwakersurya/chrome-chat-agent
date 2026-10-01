@@ -14,6 +14,7 @@ export default defineManifest({
   permissions: ['sidePanel', 'activeTab', 'scripting', 'contextMenus', 'storage'],
   host_permissions: ['<all_urls>'],
   content_security_policy: {
-    extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'",
+    // no remote images or media: model output can't phone home through an <img>
+    extension_pages: "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; img-src 'self' data: blob:; media-src 'self' data: blob:",
   },
 })
